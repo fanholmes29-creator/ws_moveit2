@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>trunk_moveit_cpp_demo</name>
+  <version>0.0.1</version>
+  <description>Trunk planner demo based on MoveIt2</description>
+
+  <maintainer email="fanholmes29@gmail.com">wxl</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>moveit_ros_planning_interface</depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>trunk_configure</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,23 @@
+trunk_moveit_cpp_demo:
+  ros__parameters:
+    move_to_home_first: true
+
+    # 目标输入模式：joint / pose
+    goal_mode: "joint"
+
+    # 关节空间 home
+    home_state: [0.0, 0.0, 0.0, 0.0]
+    goal_state: [-1.5, 0.75, 0.4, 0.3]
+
+    # 笛卡尔目标
+    goal_position: [0.25, 0.00, 0.35]
+    goal_orientation: [0.0, 0.0, 0.0, 1.0]
+
+    planning_time: 5.0
+    num_planning_attempts: 5
+    velocity_scaling: 0.2
+    acceleration_scaling: 0.2
+
+    export_csv: true
+    home_csv_path: "/home/wxl/ws_moveit2/csv/home_plan.csv"
+    goal_csv_path: "/home/wxl/ws_moveit2/csv/goal_plan.csv"

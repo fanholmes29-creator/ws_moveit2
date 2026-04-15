@@ -1,0 +1,349 @@
+<?xml version="1.0"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Arinffy andStephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+
+<robot name="trunk_robot"> 
+  
+  <!-- Material definitions -->
+  <material name="orange">
+    <color rgba="0.5 0.0 0.5 1.0"/>
+  </material>
+  <material name="chassis_silver">
+    <color rgba="0.78 0.80 0.82 1.0"/> 
+  </material>
+  <material name="body_color">
+    <color rgba="0.50 0.60 0.10 1.0"/> 
+  </material>
+  <material name="metal_dark">
+    <color rgba="0.35 0.38 0.36 0.7"/> 
+  </material>
+  <material name="mat_black">
+    <color rgba="0.05 0.05 0.06 1.0"/> 
+  </material>
+  <material name="accent_blue">
+    <color rgba="0.06 0.24 0.80 1.0"/> 
+  </material>
+  <material name="white">
+    <color rgba="1.0 1.0 1.0 1.0"/>
+  </material>
+  <material name="red">
+    <color rgba="1 0.0 0.0 1.0"/>
+  </material>
+  <link
+    name="chassis_base_link">
+    <inertial>
+      <origin
+        xyz="-0.027237 -0.00044706 -0.13065"
+        rpy="0 0 0" />
+      <mass
+        value="18.789" />
+      <inertia
+        ixx="0.32103"
+        ixy="-0.00088596"
+        ixz="0.0070426"
+        iyy="0.35279"
+        iyz="0.00010881"
+        izz="0.63543" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/chassis_base_link.STL" />
+      </geometry>
+      <material name="mat_black"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/chassis_base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint
+    name="trunk_base_link_joint"
+    type="fixed">
+    <origin
+      xyz="0 0 0.0"
+      rpy="0 0 0" />
+    <parent
+      link="chassis_base_link" />
+    <child
+      link="trunk_base_link" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+
+
+  <link
+    name="trunk_base_link">
+    <inertial>
+      <origin
+        xyz="-3.32739807928917E-11 0.00108475904249383 0.0646969570751819"
+        rpy="0 0 0" />
+      <mass
+        value="5.2916725383757" />
+      <inertia
+        ixx="0.0204718891237549"
+        ixy="4.85115711850459E-12"
+        ixz="-6.41065846332626E-12"
+        iyy="0.0225397707546832"
+        iyz="-0.000166583637729049"
+        izz="0.014637715325779" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/base_link.STL" />
+      </geometry>
+      <material name="metal_dark"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="trunk_joint1"
+    type="revolute">
+    <origin
+      xyz="0 -0.0393 0.112"
+      rpy="0 0 0" />
+    <parent
+      link="trunk_base_link" />
+    <child
+      link="trunk_link1" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="300"
+      velocity="15" />
+    <dynamics
+      damping="0.01"
+      friction="0.1" />
+  </joint>
+  <link
+    name="trunk_link1">
+    <inertial>
+      <origin
+        xyz="-2.00192633256768E-06 0.037648370852891 0.229389705349819"
+        rpy="0 0 0" />
+      <mass
+        value="6.12532979899165" />
+      <inertia
+        ixx="0.107502593877351"
+        ixy="-4.33428423533899E-07"
+        ixz="1.55820301705163E-06"
+        iyy="0.105834274643522"
+        iyz="0.000834756143947899"
+        izz="0.0138000958638935" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link1.STL" />
+      </geometry>
+      <material name="metal_dark"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="trunk_joint2"
+    type="revolute">
+    <origin
+      xyz="0 -0.013 0.327"
+      rpy="0 0 0" />
+    <parent
+      link="trunk_link1" />
+    <child
+      link="trunk_link2" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="300"
+      velocity="15" />
+    <dynamics
+      damping="0.01"
+      friction="0.1" />
+  </joint>
+  <link
+    name="trunk_link2">
+    <inertial>
+      <origin
+        xyz="6.93889390390723E-17 0.0527983940700079 0.181464564928581"
+        rpy="0 0 0" />
+      <mass
+        value="4.75279692361668" />
+      <inertia
+        ixx="0.0610885753910733"
+        ixy="-1.19536966653269E-18"
+        ixz="-7.76730748312509E-18"
+        iyy="0.0529989544087246"
+        iyz="-0.00179309730212265"
+        izz="0.0201482952717101" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link2.STL" />
+      </geometry>
+      <material name="metal_dark"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="trunk_joint3"
+    type="revolute">
+    <origin
+      xyz="0 0.1018 0.255"
+      rpy="0 0 0" />
+    <parent
+      link="trunk_link2" />
+    <child
+      link="trunk_link3" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="300"
+      velocity="15" />
+    <dynamics
+      damping="0.01"
+      friction="0.1" />
+  </joint>
+  <link
+    name="trunk_link3">
+    <inertial>
+      <origin
+        xyz="1.69489079715479E-09 -0.0494999971490837 0.0299182901675204"
+        rpy="0 0 0" />
+      <mass
+        value="1.40110394589238" />
+      <inertia
+        ixx="0.0039279902713771"
+        ixy="-9.37102716068198E-12"
+        ixz="1.60664128414939E-11"
+        iyy="0.00456822897709997"
+        iyz="-9.20676483539881E-11"
+        izz="0.00233089385500014" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link3.STL" />
+      </geometry>
+      <material name="metal_dark"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="trunk_joint4"
+    type="revolute">
+    <origin
+      xyz="0 -0.0495 0.1005"
+      rpy="0 0 0" />
+    <parent
+      link="trunk_link3" />
+    <child
+      link="trunk_link4" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="300"
+      velocity="15" />
+    <dynamics
+      damping="0.01"
+      friction="0.1" />
+  </joint>
+  <link
+    name="trunk_link4">
+    <inertial>
+      <origin
+        xyz="-0.00657929165109954 2.61392266098781E-06 0.218245992580224"
+        rpy="0 0 0" />
+      <mass
+        value="4.66047184585229" />
+      <inertia
+        ixx="0.0788874639537613"
+        ixy="5.46530938736686E-10"
+        ixz="0.00286825206797472"
+        iyy="0.0515041942141216"
+        iyz="3.46275348004213E-07"
+        izz="0.0448953474115628" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link4.STL" />
+      </geometry>
+      <material name="metal_dark"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robot_model/meshes/Trunk_Link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+</robot>
