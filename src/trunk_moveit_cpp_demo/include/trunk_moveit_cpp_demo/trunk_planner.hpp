@@ -7,6 +7,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <geometry_msgs/msg/pose.hpp>
+
+// 对指定 MoveIt 规划组封装 MoveGroupInterface：关节/位姿目标规划、轨迹执行、日志与 CSV 导出。
 class TrunkPlanner
 {
 public:
@@ -16,62 +18,53 @@ public:
 
   ~TrunkPlanner() = default;
 
-  // 初始化 MoveGroupInterface，并设置默认参数
+  // 创建 MoveGroupInterface 并完成基础配置。
   bool initialize();
 
-  // 规划并执行到目标关节值
+  // 关节目标：规划并立即执行。
   bool planAndExecuteJointTarget(const std::vector<double>& target_joint_values);
 
-  // 只规划，不执行
+  // 关节目标：仅规划，结果写入 plan。
   bool planToJointTarget(
     const std::vector<double>& target_joint_values,
     moveit::planning_interface::MoveGroupInterface::Plan& plan);
-    
+
+  // 末端位姿目标：仅规划（需运动学可用）。
   bool planToPoseTarget(
     const geometry_msgs::msg::Pose& target_pose,
     moveit::planning_interface::MoveGroupInterface::Plan& plan);
 
-  // 执行已经规划好的轨迹
+  // 执行已生成的轨迹。
   bool executePlan(
     const moveit::planning_interface::MoveGroupInterface::Plan& plan);
 
-  // 打印轨迹摘要
+  // 将规划轨迹要点打印到日志。
   void printPlanTrajectory(
     const moveit::planning_interface::MoveGroupInterface::Plan& plan) const;
 
-  // 导出轨迹到 CSV 文件
+  // 将关节轨迹导出为 CSV（含时间、位置、速度、加速度列）。
   bool exportPlanTrajectoryToCSV(
     const moveit::planning_interface::MoveGroupInterface::Plan& plan,
     const std::string& file_path) const;
 
-
-
-  // 读取当前关节值
   std::vector<double> getCurrentJointValues() const;
-
-  // 读取关节名
   std::vector<std::string> getJointNames() const;
-
-  // 读取规划组名称
   std::string getPlanningGroup() const;
 
-  // 参数设置
+  // 规划时间、尝试次数与速度/加速度缩放（作用于后续 plan）。
   void setPlanningTime(double planning_time);
   void setNumPlanningAttempts(int num_attempts);
   void setVelocityScaling(double scaling);
   void setAccelerationScaling(double scaling);
 
-  // 打印当前基本信息
+  // 打印规划组、规划坐标系、连杆与关节列表等。
   void logBasicInfo() const;
 
 private:
-  // 基础校验
+  // 关节目标向量维度与数值合法性检查。
   bool validateTarget(const std::vector<double>& target_joint_values) const;
-
-  // 工具函数：判断数值是否合法
   bool isFiniteVector(const std::vector<double>& values) const;
 
-private:
   rclcpp::Node::SharedPtr node_;
   std::string planning_group_;
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
