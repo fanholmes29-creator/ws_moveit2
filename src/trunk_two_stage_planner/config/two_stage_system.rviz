@@ -1,0 +1,39 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Value: true
+    - Class: moveit_rviz_plugin/MotionPlanning
+      Name: MotionPlanning
+      Planned Path:
+        Loop Animation: true
+        State Display Time: 0.05 s
+        Trajectory Topic: /display_planned_path
+      Planning Scene Topic: /monitored_planning_scene
+      Robot Description: robot_description
+      Scene Robot:
+        Robot Alpha: 0.5
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: TwoStageDebug
+      Marker Topic: /two_stage_debug_markers
+      Value: true
+  Global Options:
+    Fixed Frame: chassis_base_link
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.0
+      Focal Point:
+        X: -0.1
+        Y: 0.25
+        Z: 0.30
+      Name: Current View
+      Pitch: 0.5
+      Target Frame: chassis_base_link
+      Yaw: -0.623

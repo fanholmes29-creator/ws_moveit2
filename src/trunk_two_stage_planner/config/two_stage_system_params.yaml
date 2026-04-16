@@ -1,0 +1,68 @@
+two_stage_planner_system:
+  ros__parameters:
+    robot_description_package: "robot_model"
+    urdf_relative_path: "urdf/trunk_robot.urdf"
+    moveit_config_package: "trunk_configure"
+    srdf_relative_path: "config/trunk_robot.srdf"
+
+    group_name: "trunk_group"
+    stage1_group_name: "stage1_group"
+    stage2_group_name: "stage2_group"
+    joint1_name: "trunk_joint1"
+    joint2_name: "trunk_joint2"
+    joint3_name: "trunk_joint3"
+    joint4_name: "trunk_joint4"
+    reference_link_name: "trunk_link4"
+    planning_frame: "chassis_base_link"
+
+    q_start: [0.0, 0.0, 0.0, 0.0]
+    goal_joint_target: [-1.5, 0.75, 0.4, 0.3]
+    q_goal_fallback: [-1.5, 0.75, 0.4, 0.3]
+
+    use_goal_state_as_target_pose: true
+    target_position: [0.25, 0.0, 0.35]
+    target_orientation: [0.0, 0.0, 0.0, 1.0]
+
+    allow_goal_fallback: true
+    ik_attempts: 12
+    ik_timeout: 0.02
+    ik_limit_penalty_weight: 0.2
+
+    stage1_q1_samples: 81
+    stage1_q2_samples: 81
+    w1: 1.0
+    w2: 10.0
+    w3: 0.05
+    w4: 0.5
+    stage2_pose_wp: 1.0
+    stage2_pose_wR: 0.2
+    stage2_pose_epsilon: 0.01
+    joint_limit_margin_ratio: 0.1
+
+    stage2_eval_q3_samples: 15
+    stage2_eval_q4_samples: 15
+    stage2_q3_samples: 81
+    stage2_q4_samples: 81
+    stage2_pos_weight: 1.0
+    stage2_ori_weight: 0.2
+    stage2_q34_bias_weight: 0.02
+
+    stage1_duration: 2.0
+    stage2_duration: 2.5
+    dt: 0.02
+    output_dir: "/home/wxl/ws_moveit2/csv/two_stage_system"
+
+    planning_time: 5.0
+    planning_attempts: 5
+    velocity_scaling: 0.2
+    acceleration_scaling: 0.2
+
+    stage1_eef_step: 0.01
+    stage1_jump_threshold: 0.0
+    stage1_min_fraction: 0.90
+    stage1_waypoint_count: 15
+    stage2_q12_tolerance: 0.03
+
+    marker_topic: "/two_stage_debug_markers"
+    display_trajectory_topic: "/display_planned_path"
+    export_csv: true

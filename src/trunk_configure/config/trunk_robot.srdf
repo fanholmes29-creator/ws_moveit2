@@ -3,8 +3,29 @@
     <group name="trunk_group">
         <chain base_link="trunk_base_link" tip_link="trunk_link4"/>
     </group>
+    <!-- Engineering approximation:
+         stage1/stage2 use separate MoveIt groups for separate planning logic,
+         but both still act on the same physical trunk chain. -->
+    <group name="stage1_group">
+        <chain base_link="trunk_base_link" tip_link="trunk_link4"/>
+    </group>
+    <group name="stage2_group">
+        <chain base_link="trunk_base_link" tip_link="trunk_link4"/>
+    </group>
 
     <group_state name="home" group="trunk_group">
+        <joint name="trunk_joint1" value="0"/>
+        <joint name="trunk_joint2" value="0"/>
+        <joint name="trunk_joint3" value="0"/>
+        <joint name="trunk_joint4" value="0"/>
+    </group_state>
+    <group_state name="home" group="stage1_group">
+        <joint name="trunk_joint1" value="0"/>
+        <joint name="trunk_joint2" value="0"/>
+        <joint name="trunk_joint3" value="0"/>
+        <joint name="trunk_joint4" value="0"/>
+    </group_state>
+    <group_state name="home" group="stage2_group">
         <joint name="trunk_joint1" value="0"/>
         <joint name="trunk_joint2" value="0"/>
         <joint name="trunk_joint3" value="0"/>
