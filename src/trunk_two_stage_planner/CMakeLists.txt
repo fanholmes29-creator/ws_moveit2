@@ -47,6 +47,10 @@ add_executable(two_stage_planner_system
   src/system_main.cpp
 )
 
+add_executable(fk_pose_from_joint
+  src/fk_pose_from_joint_main.cpp
+)
+
 ament_target_dependencies(two_stage_planner_analysis_tool
   rclcpp
   geometry_msgs
@@ -81,6 +85,23 @@ target_link_libraries(two_stage_planner_system
 )
 target_compile_features(two_stage_planner_system PUBLIC cxx_std_17)
 
+ament_target_dependencies(fk_pose_from_joint
+  rclcpp
+  geometry_msgs
+  visualization_msgs
+  moveit_msgs
+  ament_index_cpp
+  moveit_core
+  moveit_ros_planning
+  moveit_ros_planning_interface
+)
+
+target_link_libraries(fk_pose_from_joint
+  ${PROJECT_NAME}_lib
+  Eigen3::Eigen
+)
+target_compile_features(fk_pose_from_joint PUBLIC cxx_std_17)
+
 install(DIRECTORY include/
   DESTINATION include
 )
@@ -89,6 +110,7 @@ install(TARGETS
   ${PROJECT_NAME}_lib
   two_stage_planner_analysis_tool
   two_stage_planner_system
+  fk_pose_from_joint
   DESTINATION lib/${PROJECT_NAME}
 )
 

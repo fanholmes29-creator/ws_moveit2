@@ -35,6 +35,9 @@ bool RobotKinematicsHelper::initialize(
   const rclcpp::Node::SharedPtr& node,
   const PlannerConfig& config)
 {
+  // 文件职责：
+  // 提供稳定且显式的运动学初始化路径。
+  // 避免对外部 launch 参数加载顺序产生隐式依赖。
   node_ = node;
   config_ = config;
 
@@ -62,6 +65,7 @@ bool RobotKinematicsHelper::initialize(
 
   robot_model_loader::RobotModelLoader::Options options(urdf_xml, srdf_xml);
   options.robot_description_ = "robot_description";
+  // 显式关闭自动加载，避免不同环境下插件选择歧义。
   options.load_kinematics_solvers_ = false;
 
   model_loader_ = std::make_shared<robot_model_loader::RobotModelLoader>(node_, options);
@@ -118,6 +122,8 @@ bool RobotKinematicsHelper::solveIK(
   std::vector<double>& q_solution,
   const std::vector<double>& seed) const
 {
+  // 注意：
+  // seed 质量会直接影响 IK 收敛性，以及多解空间中的分支选择。
   if (!hasIKSolver()) {
     return false;
   }
@@ -149,6 +155,8 @@ Axis3D RobotKinematicsHelper::computeJointAxisInWorld(
   const std::vector<double>& q,
   const std::string& joint_name) const
 {
+  // 将关节坐标系中的轴转换到世界坐标系后计算。
+  // 警告：修改此实现会影响所有基于投影的 stage1 几何逻辑。
   moveit::core::RobotState state = makeRobotState(q);
   const moveit::core::JointModel* joint_model = robot_model_->getJointModel(joint_name);
   if (!joint_model) {
@@ -186,6 +194,7 @@ Axis3D RobotKinematicsHelper::computeJointAxisInWorld(
 
 bool RobotKinematicsHelper::isStateWithinBounds(const std::vector<double>& q) const
 {
+  // 集中式边界检查，供算法层与辅助工具层共用。
   moveit::core::RobotState state = makeRobotState(q);
   return state.satisfiesBounds(joint_model_group_);
 }
@@ -199,6 +208,7 @@ std::pair<double, double> RobotKinematicsHelper::getJointPositionBounds(
 
 std::vector<double> RobotKinematicsHelper::sampleRandomState(std::mt19937& rng) const
 {
+  // 在关节边界内均匀采样，用于 IK 多样化求解。
   std::vector<double> q;
   q.reserve(joint_names_.size());
   for (const auto& joint_name : joint_names_) {

@@ -17,6 +17,8 @@ namespace trunk_two_stage_planner
 namespace
 {
 
+// 与运行时入口保持一致的参数声明辅助函数。
+// 在 launch/CLI 注入 YAML 覆盖参数时，保证参数加载鲁棒。
 void declareIfMissingBool(const rclcpp::Node::SharedPtr& node, const std::string& name, bool value)
 {
   if (!node->has_parameter(name)) {
@@ -92,6 +94,8 @@ geometry_msgs::msg::Pose toPoseMsg(const Eigen::Isometry3d& tf)
 
 PlannerConfig loadConfig(const rclcpp::Node::SharedPtr& node)
 {
+  // 分析模式与运行模式共享同一套算法配置结构。
+  // 这样可保证离线调参结果可直接迁移到在线运行。
   PlannerConfig config;
 
   declareIfMissingString(node, "robot_description_package", config.robot_description_package);
@@ -201,6 +205,9 @@ PlannerConfig loadConfig(const rclcpp::Node::SharedPtr& node)
 
 int main(int argc, char* argv[])
 {
+  // 文件职责：
+  // 离线分析入口：评估算法行为并导出诊断数据。
+  // 这里不会发起 MoveGroup 规划请求。
   rclcpp::init(argc, argv);
 
   try {
@@ -279,6 +286,7 @@ int main(int argc, char* argv[])
     summary.stage2_point_count = stage2.size();
 
     {
+      // stage1 直立性指标，用于调参时跟踪舒适性/安全性趋势。
       double tilt_sum_deg = 0.0;
       double tilt_max_deg = 0.0;
       for (const auto& point : stage1) {

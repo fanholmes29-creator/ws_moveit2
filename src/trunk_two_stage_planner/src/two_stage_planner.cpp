@@ -43,6 +43,8 @@ TwoStagePlanner::TwoStagePlanner(
   const PlannerConfig& config)
 : kinematics_(kinematics), config_(config)
 {
+  // 关节索引仅在构造时缓存一次。
+  // 警告：若 SRDF 中 group 排序变化，此映射检查是第一道安全防线。
   if (!kinematics_.getJointIndex(config_.joint1_name, idx_q1_) ||
       !kinematics_.getJointIndex(config_.joint2_name, idx_q2_) ||
       !kinematics_.getJointIndex(config_.joint3_name, idx_q3_) ||
@@ -56,6 +58,9 @@ bool TwoStagePlanner::plan(
   const geometry_msgs::msg::Pose& target_pose,
   PlanningSummary& summary) const
 {
+  // 文件职责：
+  // 纯算法流水线（不发起 MoveIt 规划请求）。
+  // 产出阶段边界状态与诊断数据，供 manager/导出模块消费。
   summary = PlanningSummary();
   summary.q_start = q_start;
 
@@ -133,6 +138,10 @@ bool TwoStagePlanner::solveFinalIK(
   std::vector<double>& q_goal,
   bool& used_fallback_goal) const
 {
+  // 策略：
+  // 1) 用确定性 seed + 随机 seed 收集 IK 候选
+  // 2) 按“接近起点平滑性 + 限位裕度代价”排序
+  // 3) 仅在允许且 IK 全失败时回退到配置目标
   used_fallback_goal = false;
   std::vector<std::vector<double>> candidates;
 
@@ -159,6 +168,7 @@ bool TwoStagePlanner::solveFinalIK(
     }
 
     std::mt19937 rng(42);
+    // 固定随机种子，保证工程调试可复现。
     for (int i = 0; i < config_.ik_attempts; ++i) {
       try_seed(kinematics_.sampleRandomState(rng));
     }
@@ -179,6 +189,8 @@ bool TwoStagePlanner::solveFinalIK(
   }
 
   if (config_.allow_goal_fallback && config_.q_goal_fallback.size() == q_start.size()) {
+    // 警告：回退路径会绕过笛卡尔 IK 的精确性保证。
+    // 仅在更看重运行鲁棒性而非位姿严格精确时启用。
     q_goal = config_.q_goal_fallback;
     used_fallback_goal = true;
     return true;
@@ -207,6 +219,8 @@ std::vector<double> TwoStagePlanner::composeStage1State(
   double q2,
   double q4_fix) const
 {
+  // trunk 场景特定 stage1 规则：
+  // q3 跟随 q1+q2 耦合；q4 固定为起始阶段值。
   std::vector<double> q(kinematics_.getJointNames().size(), 0.0);
   q[idx_q1_] = q1;
   q[idx_q2_] = q2;
@@ -240,6 +254,8 @@ double TwoStagePlanner::jointLimitPenalty(const std::vector<double>& q) const
     const double margin = std::min(q[i] - lower, upper - q[i]);
     const double margin_ratio = margin / range;
     if (margin_ratio < config_.joint_limit_margin_ratio) {
+      // 对接近限位的状态施加软抑制。
+      // 增大 `joint_limit_margin_ratio` 会扩大保守安全缓冲区。
       const double normalized =
         (config_.joint_limit_margin_ratio - margin_ratio) / config_.joint_limit_margin_ratio;
       penalty += normalized * normalized;
@@ -260,6 +276,7 @@ double TwoStagePlanner::stage1Cost(
   Eigen::Vector3d* o4_out,
   Eigen::Vector3d* o4_proj_out) const
 {
+  // 当不存在阈值可行候选时，使用该回退排序目标。
   const std::vector<double> q_stage1 = composeStage1State(q1, q2, q_start[idx_q4_]);
   const double limit_penalty = jointLimitPenalty(q_stage1);
   if (!std::isfinite(limit_penalty) || !kinematics_.isStateWithinBounds(q_stage1)) {
@@ -286,6 +303,11 @@ double TwoStagePlanner::stage1Cost(
   }
 
   const double term_start_bias = squaredDistance2D(q1, q2, q_start[idx_q1_], q_start[idx_q2_]);
+  // 注意：
+  // - `w1`：投影对齐压力
+  // - `w2`：stage2 粗可恢复性压力
+  // - `w3`：起始姿态附近的舒适/连续性约束
+  // - `w4`：关节限位安全裕度约束
   return config_.w1 * projection_error * projection_error +
          config_.w2 * stage2_pos_error * stage2_pos_error +
          config_.w3 * term_start_bias +
@@ -299,6 +321,8 @@ bool TwoStagePlanner::searchStage1PreparatoryState(
   const Eigen::Quaterniond& q_d,
   Stage1SearchResult& result) const
 {
+  // 在 (q1, q2) 上执行 stage1 网格搜索，q3/q4 由 trunk 规则确定。
+  // 选择策略为“阈值优先，其次加权回退”。
   const auto [q1_lower, q1_upper] = kinematics_.getJointPositionBounds(config_.joint1_name);
   const auto [q2_lower, q2_upper] = kinematics_.getJointPositionBounds(config_.joint2_name);
   const double q4_fix = q_start[idx_q4_];
@@ -375,6 +399,9 @@ bool TwoStagePlanner::searchStage1PreparatoryState(
         config_.w4 * limit_penalty;
 
       if (stage2_pose_error < config_.stage2_pose_epsilon) {
+        // 主分支：
+        // 候选已满足 stage2 可恢复性阈值，用过滤后的 stage1 目标排序。
+        // 一旦满足位姿可恢复性，这里有意不再使用 `w2` 参与排序。
         ++result.threshold_feasible_count;
         found_threshold_feasible = true;
         if (filtered_cost < best_filtered_cost) {
@@ -389,6 +416,9 @@ bool TwoStagePlanner::searchStage1PreparatoryState(
           result.used_threshold_filter = true;
         }
       } else if (!found_threshold_feasible && cost < best_fallback_cost) {
+        // 回退分支：
+        // 仅在尚未出现阈值可行点时启用。
+        // 可提升困难目标下的可用性，但可能削弱严格阶段分离质量。
         best_fallback_cost = cost;
         result.best_cost = cost;
         result.q_pre = q_candidate;
@@ -409,6 +439,8 @@ double TwoStagePlanner::minStage2PositionErrorForFixedQ1Q2(
   const std::vector<double>& q_with_fixed_q1q2,
   const Eigen::Vector3d& p_d) const
 {
+  // 用于 stage1 排序的粗粒度评估器：
+  // 扫描 (q3,q4)，记录到目标点的最小位置误差。
   const auto [q3_lower, q3_upper] = kinematics_.getJointPositionBounds(config_.joint3_name);
   const auto [q4_lower, q4_upper] = kinematics_.getJointPositionBounds(config_.joint4_name);
 
@@ -444,6 +476,7 @@ double TwoStagePlanner::minStage2PoseErrorForFixedQ1Q2(
   const Eigen::Quaterniond& q_d,
   double* best_pos_error) const
 {
+  // 用于阈值筛选（`stage2_pose_epsilon`）的位姿感知评估器。
   const auto [q3_lower, q3_upper] = kinematics_.getJointPositionBounds(config_.joint3_name);
   const auto [q4_lower, q4_upper] = kinematics_.getJointPositionBounds(config_.joint4_name);
 
@@ -475,6 +508,9 @@ double TwoStagePlanner::minStage2PoseErrorForFixedQ1Q2(
       const double pose_error =
         config_.stage2_pose_wp * pos_error * pos_error +
         config_.stage2_pose_wR * e_R.squaredNorm();
+      // 调参建议：
+      // - 增大 `stage2_pose_wp`：更强调笛卡尔位置闭合
+      // - 增大 `stage2_pose_wR`：更强调姿态可恢复性收敛
 
       if (pose_error < best_pose_error) {
         best_pose_error = pose_error;
@@ -497,6 +533,8 @@ bool TwoStagePlanner::optimizeStage2LockedQ1Q2(
   double& position_error,
   double& orientation_error_deg) const
 {
+  // 在 q1/q2 锁定语义下执行最终 stage2 目标搜索。
+  // 使用词典序优先级可避免指标间不稳定权衡。
   const auto [q3_lower, q3_upper] = kinematics_.getJointPositionBounds(config_.joint3_name);
   const auto [q4_lower, q4_upper] = kinematics_.getJointPositionBounds(config_.joint4_name);
 
@@ -557,6 +595,9 @@ bool TwoStagePlanner::optimizeStage2LockedQ1Q2(
             (same_pose && same_position && same_orientation && better_bias))) {
         continue;
       }
+      // 词典序优先级：
+      // 1) 位姿残差  2) 位置误差  3) 姿态误差  4) 接近 IK q3/q4
+      // 警告：调整该顺序会全局改变 stage2 行为。
 
       best_q = q_pre;
       best_q[idx_q3_] = q3;
@@ -587,6 +628,7 @@ double TwoStagePlanner::stage2LockedCost(
   double* position_error,
   double* orientation_error_deg) const
 {
+  // 辅助标量代价（主要用于诊断）；最终选择以上方词典序为准。
   std::vector<double> q = q_pre;
   q[idx_q3_] = q3;
   q[idx_q4_] = q4;
@@ -662,6 +704,8 @@ double TwoStagePlanner::ikCandidateCost(
   const std::vector<double>& q,
   const std::vector<double>& q_start) const
 {
+  // IK 排序正则项：
+  // 尽量减少相对起点运动，同时避免贴近限位解。
   return squaredNormDiff(q, q_start) + config_.ik_limit_penalty_weight * jointLimitPenalty(q);
 }
 

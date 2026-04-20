@@ -49,6 +49,8 @@
   - 轨迹导出、summary 和 heatmap 导出接口
 - `src/trajectory_utils.cpp`
   - CSV / summary / geometry_points 导出实现
+- `src/fk_pose_from_joint_main.cpp`
+  - 关节空间目标转目标位姿（FK）的小工具入口，直接输出可粘贴的 `target_position/target_orientation`
 
 ## 两阶段算法流程
 
@@ -151,8 +153,10 @@
     - `two_stage_planner_manager.cpp`
     - `trajectory_utils.cpp`
     - `system_main.cpp`
-    - `main.cpp`  
-      说明：保留为分析工具入口，对应 `two_stage_planner_analysis_tool`
+    - `analysis_tool_main.cpp`  
+      说明：离线分析工具入口，对应 `two_stage_planner_analysis_tool`
+    - `fk_pose_from_joint_main.cpp`
+      说明：FK 打印工具入口，对应 `fk_pose_from_joint`
   - `config/`
     - `two_stage_system_params.yaml`
     - `two_stage_system.rviz`
@@ -218,6 +222,39 @@ ros2 run trunk_two_stage_planner two_stage_planner_analysis_tool \
   --ros-args \
   --params-file ~/ws_moveit2/src/trunk_two_stage_planner/config/tools/two_stage_planner_analysis_tool.yaml
 ```
+
+### FK 打印工具（输入关节目标，输出可粘贴位姿）
+
+用途：
+
+- 输入关节空间目标（`goal_joint_target`）
+- 直接打印两行可粘贴到 `two_stage_system_params.yaml` 的：
+  - `target_position: [...]`
+  - `target_orientation: [...]`
+
+示例命令：
+
+```
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run trunk_two_stage_planner fk_pose_from_joint --ros-args -p goal_joint_target:="[-1.5, 1.5, 0.7, 0.6]"
+```
+
+示例输出（格式示意）：
+
+```text
+target_position: [0.172874, 0.000000, 0.610959]
+target_orientation: [0.029503, 0.095375, 0.294044, 0.950564]
+source_goal_joint_target: [-1.000000, 1.500000, 0.700000, 0.600000]
+```
+
+注意：
+
+- 参数数组必须同类型，建议统一写成浮点（如 `-1.0` 而不是 `-1`）。
+- 若你只想用 FK 结果进行规划，可以把输出复制到：
+  - `target_position`
+  - `target_orientation`
+  并设置 `use_goal_state_as_target_pose: false`。
 
 ## RViz 中看什么
 

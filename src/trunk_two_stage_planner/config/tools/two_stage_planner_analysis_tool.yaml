@@ -1,5 +1,6 @@
 two_stage_planner_analysis_tool:
   ros__parameters:
+    # 分析模式与运行模式使用同一套模型与算法调节项。
     robot_description_package: "robot_model"
     urdf_relative_path: "urdf/trunk_robot.urdf"
     moveit_config_package: "trunk_configure"
@@ -25,6 +26,8 @@ two_stage_planner_analysis_tool:
     ik_timeout: 0.02
     ik_limit_penalty_weight: 0.2
 
+    # 为提升调参精度，建议使用更密集网格。
+    # 警告：这会带来更高计算开销。
     stage1_q1_samples: 181
     stage1_q2_samples: 181
     w1: 1.0
@@ -33,9 +36,11 @@ two_stage_planner_analysis_tool:
     w4: 0.5
     stage2_pose_wp: 1.0
     stage2_pose_wR: 0.2
+    # 用于可恢复性可行诊断的更严格阈值。
     stage2_pose_epsilon: 0.002
     joint_limit_margin_ratio: 0.1
 
+    # 离线诊断使用的 stage2 评估/优化网格配置。
     stage2_eval_q3_samples: 41
     stage2_eval_q4_samples: 41
     stage2_q3_samples: 181

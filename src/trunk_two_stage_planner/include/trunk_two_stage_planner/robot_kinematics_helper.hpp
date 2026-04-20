@@ -16,6 +16,21 @@
 namespace trunk_two_stage_planner
 {
 
+/**
+ * @brief 对 MoveIt 机器人模型/状态/IK 能力的轻量封装。
+ *
+ * 职责：
+ *  - 加载 URDF/SRDF 并初始化 RobotModel/JointModelGroup。
+ *  - 提供 FK/IK 访问与关节元信息查询。
+ *  - 提供关节轴世界系计算等几何辅助能力。
+ *
+ * 生命周期：
+ *  - 使用前必须先调用一次 `initialize(...)`。
+ *  - 初始化后可安全复用，支持重复规划请求。
+ *
+ * 维护说明：
+ *  - 若机器人描述包名或 group 命名变化，应优先更新初始化配置。
+ */
 class RobotKinematicsHelper
 {
 public:
@@ -27,6 +42,7 @@ public:
   bool solveIK(const geometry_msgs::msg::Pose& target_pose, std::vector<double>& q_solution,
     const std::vector<double>& seed = {}) const;
 
+  /// 返回转动/移动关节在世界坐标系下的轴线表示。
   Axis3D computeJointAxisInWorld(const std::vector<double>& q, const std::string& joint_name) const;
 
   bool isStateWithinBounds(const std::vector<double>& q) const;
@@ -57,6 +73,7 @@ private:
   const moveit::core::JointModelGroup* joint_model_group_ = nullptr;
   std::vector<std::string> joint_names_;
   std::string tip_link_name_;
+  // 保存解析后的绝对路径，便于诊断输出与 README/工具展示。
   std::string urdf_path_;
   std::string srdf_path_;
 };

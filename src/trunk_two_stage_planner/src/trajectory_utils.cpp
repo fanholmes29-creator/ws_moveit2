@@ -50,6 +50,9 @@ std::vector<TrajPoint> generateQuinticTrajectory(
   double dt,
   int stage_id)
 {
+  // 文件职责：
+  // 仅提供确定性的轨迹生成与导出工具。
+  // 为保证离线/在线结果可对比，此处行为应保持稳定。
   if (q_start.size() != q_goal.size()) {
     throw std::runtime_error("Quintic trajectory endpoints have different dimensions.");
   }
@@ -101,6 +104,7 @@ std::vector<TrajPoint> concatenateTrajectories(
   const std::vector<TrajPoint>& stage1,
   const std::vector<TrajPoint>& stage2)
 {
+  // 当 stage1 非空时，跳过重复边界采样点。
   std::vector<TrajPoint> merged = stage1;
   if (stage2.empty()) {
     return merged;
@@ -121,6 +125,7 @@ bool exportTrajectoryCsv(
   const std::vector<std::string>& joint_names,
   const std::vector<TrajPoint>& trajectory)
 {
+  // 有意使用纯 CSV 导出，便于后处理工具无依赖接入。
   ensureParentDirectory(file_path);
   std::ofstream ofs(file_path);
   if (!ofs.is_open()) {
@@ -162,6 +167,7 @@ bool exportSummaryTxt(
   const std::vector<std::string>& joint_names,
   const PlanningSummary& summary)
 {
+  // 导出可读摘要，记录选中路径与阶段切换诊断信息。
   ensureParentDirectory(file_path);
   std::ofstream ofs(file_path);
   if (!ofs.is_open()) {
@@ -244,6 +250,8 @@ bool exportStage1HeatmapCsv(
   const std::string& file_path,
   const std::vector<Stage1HeatmapSample>& heatmap_samples)
 {
+  // 注意：
+  // 该文件是调节阈值/权重与候选筛选逻辑时的核心分析产物。
   ensureParentDirectory(file_path);
   std::ofstream ofs(file_path);
   if (!ofs.is_open()) {

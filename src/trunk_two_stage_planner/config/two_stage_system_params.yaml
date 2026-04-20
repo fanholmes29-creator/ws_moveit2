@@ -1,10 +1,14 @@
 two_stage_planner_system:
   ros__parameters:
+    # 机器人模型与语义模型来源。
     robot_description_package: "robot_model"
     urdf_relative_path: "urdf/trunk_robot.urdf"
     moveit_config_package: "trunk_configure"
     srdf_relative_path: "config/trunk_robot.srdf"
 
+    # Group 路由：
+    # - group_name：算法层 FK/IK 使用的模型组
+    # - stage1/stage2_group_name：运行时 MoveIt 规划组
     group_name: "trunk_group"
     stage1_group_name: "stage1_group"
     stage2_group_name: "stage2_group"
@@ -16,18 +20,22 @@ two_stage_planner_system:
     planning_frame: "chassis_base_link"
 
     q_start: [0.0, 0.0, 0.0, 0.0]
-    goal_joint_target: [-1.5, 0.75, 0.4, 0.3]
-    q_goal_fallback: [-1.5, 0.75, 0.4, 0.3]
+    goal_joint_target: [-1.5, 1.5, 0.7, 0.6]
+    q_goal_fallback: [-1.0, 1.5, 0.7, 0.6]
+    # 目标策略开关：
+    # true -> 由 goal_joint_target 的 FK 推导目标位姿
+    # false -> 使用下方 target_position + target_orientation
+    use_goal_state_as_target_pose: false
 
-    use_goal_state_as_target_pose: true
-    target_position: [0.25, 0.0, 0.35]
-    target_orientation: [0.0, 0.0, 0.0, 1.0]
-
+    target_position: [0.226100, 0.000000, 0.603935]
+    target_orientation: [0.014770, 0.047747, 0.295151, 0.954143]
     allow_goal_fallback: true
     ik_attempts: 12
     ik_timeout: 0.02
     ik_limit_penalty_weight: 0.2
 
+    # stage1 搜索分辨率与加权目标。
+    # 警告：采样数会使计算代价近似按 q1_samples * q2_samples 增长。
     stage1_q1_samples: 81
     stage1_q2_samples: 81
     w1: 1.0
@@ -36,9 +44,12 @@ two_stage_planner_system:
     w4: 0.5
     stage2_pose_wp: 1.0
     stage2_pose_wR: 0.2
+    # 切换到“可恢复候选子集”策略的阈值。
+    # 值越小 => 阶段分离越严格，但可行性更难满足。
     stage2_pose_epsilon: 0.01
     joint_limit_margin_ratio: 0.1
 
+    # stage2 评估器与优化器网格密度。
     stage2_eval_q3_samples: 15
     stage2_eval_q4_samples: 15
     stage2_q3_samples: 81
@@ -47,11 +58,13 @@ two_stage_planner_system:
     stage2_ori_weight: 0.2
     stage2_q34_bias_weight: 0.02
 
+    # 离线轨迹导出的时间参数（非 MoveIt 时间参数化）。
     stage1_duration: 2.0
     stage2_duration: 2.5
     dt: 0.02
     output_dir: "/home/wxl/ws_moveit2/csv/two_stage_system"
 
+    # MoveIt 规划行为调节项。
     planning_time: 5.0
     planning_attempts: 5
     velocity_scaling: 0.2
@@ -61,6 +74,8 @@ two_stage_planner_system:
     stage1_jump_threshold: 0.0
     stage1_min_fraction: 0.90
     stage1_waypoint_count: 15
+    # stage2 组内 q1/q2 锁定容差。
+    # 更小 => 分离更严格；更大 => 规划更容易但阶段泄漏风险更高。
     stage2_q12_tolerance: 0.03
 
     marker_topic: "/two_stage_debug_markers"

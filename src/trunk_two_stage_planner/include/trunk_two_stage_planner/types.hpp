@@ -8,12 +8,14 @@
 namespace trunk_two_stage_planner
 {
 
+/// 世界坐标系下的三维轴线表示（原点 + 单位方向）。
 struct Axis3D
 {
   Eigen::Vector3d origin = Eigen::Vector3d::Zero();
   Eigen::Vector3d direction = Eigen::Vector3d::UnitZ();
 };
 
+/// 统一轨迹点格式，用于离线导出与阶段轨迹拼接。
 struct TrajPoint
 {
   double t = 0.0;
@@ -23,6 +25,7 @@ struct TrajPoint
   int stage_id = 0;
 };
 
+/// stage1 搜索热力图的单网格采样诊断信息。
 struct Stage1HeatmapSample
 {
   double q1 = 0.0;
@@ -36,6 +39,7 @@ struct Stage1HeatmapSample
   Eigen::Vector3d o4_projection = Eigen::Vector3d::Zero();
 };
 
+/// stage1 搜索完整结果，包含入选候选与多维最优指标。
 struct Stage1SearchResult
 {
   bool success = false;
@@ -62,6 +66,14 @@ struct Stage1SearchResult
   std::vector<Stage1HeatmapSample> heatmap_samples;
 };
 
+/**
+ * @brief 传递给运行时管理器与导出模块的完整算法摘要。
+ *
+ * 包含：
+ *  - 选中状态（`q_pre`、`q_goal_stage2`）
+ *  - 几何诊断量与误差指标
+ *  - stage1 网格搜索统计与热力图数据
+ */
 struct PlanningSummary
 {
   std::vector<double> q_start;
@@ -109,6 +121,19 @@ struct PlanningSummary
   std::vector<Stage1HeatmapSample> heatmap_samples;
 };
 
+/**
+ * @brief 两阶段规划的算法层可调参数集合。
+ *
+ * 高影响调参分组：
+ *  - stage1 加权目标：`w1..w4`
+ *  - stage2 可恢复性阈值：`stage2_pose_epsilon`
+ *  - 位姿残差构成：`stage2_pose_wp`、`stage2_pose_wR`
+ *  - 网格搜索密度：`stage1_*samples`、`stage2_*samples`
+ *
+ * 警告：
+ *  - 增大采样数可提升精度，但计算代价近似二次上升。
+ *  - 修改 `stage2_pose_epsilon` 会直接改变策略切换行为。
+ */
 struct PlannerConfig
 {
   std::string robot_description_package = "robot_model";
@@ -138,12 +163,15 @@ struct PlannerConfig
 
   int stage1_q1_samples = 181;
   int stage1_q2_samples = 181;
+  // stage1 加权目标项。
   double w1 = 1.0;
   double w2 = 10.0;
   double w3 = 0.05;
   double w4 = 0.5;
+  // stage2 可恢复性评估时的位姿残差构成权重。
   double stage2_pose_wp = 1.0;
   double stage2_pose_wR = 0.2;
+  // 切换到“可恢复候选子集”策略的阈值。
   double stage2_pose_epsilon = 0.002;
   double joint_limit_margin_ratio = 0.1;
 

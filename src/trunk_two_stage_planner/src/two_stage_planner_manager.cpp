@@ -132,6 +132,9 @@ bool TwoStagePlannerManager::initialize(
   const PlannerConfig& algorithm_config,
   const TwoStageSystemConfig& system_config)
 {
+  // 文件职责：
+  // 连接算法层输出与 MoveIt 执行层。
+  // 该方法完成依赖装配与运行时发布器初始化。
   algorithm_config_ = algorithm_config;
   system_config_ = system_config;
 
@@ -151,6 +154,10 @@ bool TwoStagePlannerManager::initialize(
 
 bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose& target_pose)
 {
+  // 运行主链路：
+  // 1) 算法层求解 q_pre 与 stage2 目标
+  // 2) MoveIt 先规划 stage1，再规划 stage2
+  // 3) 发布/导出 RViz 与调试输出
   const std::vector<double> q_start = algorithm_config_.q_start;
 
   PlanningSummary summary;
@@ -213,6 +220,7 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
     summary.selected_stage1_stage2_pose_error < algorithm_config_.stage2_pose_epsilon ? "true" : "false");
 
   if (system_config_.export_csv) {
+    // 注意：CSV 导出属于诊断增强，运动结果在此前已确定。
     const auto stage1_points = convertRobotTrajectoryToTrajPoints(stage1_traj, 1, 0.0);
     const double time_offset = stage1_points.empty() ? 0.0 : stage1_points.back().t;
     const auto stage2_points = convertRobotTrajectoryToTrajPoints(stage2_plan.trajectory_, 2, time_offset);
@@ -260,6 +268,9 @@ bool TwoStagePlannerManager::planStage1(
   const std::vector<double>& q_pre,
   moveit::planning_interface::MoveGroupInterface::Plan& stage1_plan) const
 {
+  // 警告：
+  // 每次阶段调用均创建本地 MoveGroup 客户端。
+  // 共享长生命周期客户端曾导致 action 目标响应冲突。
   auto stage1_node = rclcpp::Node::make_shared(
     "stage1_move_group_client",
     rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
@@ -300,10 +311,14 @@ bool TwoStagePlannerManager::planStage1(
 
   stage1_group.setJointValueTarget(q_pre);
   stage1_group.setPathConstraints(constraints);
+  // 优先尝试带约束规划，以保持 stage1 姿态设计意图。
   bool ok =
     (stage1_group.plan(stage1_plan) == moveit::core::MoveItErrorCode::SUCCESS);
   stage1_group.clearPathConstraints();
   if (!ok) {
+    // 回退策略：
+    // 若 upright 约束导致规划过度受限，则允许无约束搜索，
+    // 在保持终点 q_pre 不变的前提下提升可用性。
     RCLCPP_WARN(
       node_->get_logger(),
       "Stage1 constrained planning failed. Falling back to unconstrained stage1_group planning.");
@@ -329,6 +344,7 @@ bool TwoStagePlannerManager::planStage2(
   const std::vector<double>& q_goal_stage2,
   moveit::planning_interface::MoveGroupInterface::Plan& stage2_plan) const
 {
+  // stage2 强制阶段分离：q1/q2 保持接近 q_pre，由 q3/q4 完成目标位姿恢复。
   auto stage2_node = rclcpp::Node::make_shared(
     "stage2_move_group_client",
     rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
@@ -417,6 +433,7 @@ void TwoStagePlannerManager::publishDisplayTrajectories(
   const moveit_msgs::msg::RobotTrajectory& stage2_traj,
   const std::vector<double>& q_start) const
 {
+  // 两阶段轨迹一并发布，便于在 RViz 中直观看到阶段切换序列。
   moveit_msgs::msg::DisplayTrajectory msg;
   moveit::core::RobotState start_state = buildRobotState(q_start);
   moveit::core::robotStateToRobotStateMsg(start_state, msg.trajectory_start);
@@ -431,6 +448,9 @@ void TwoStagePlannerManager::publishDebugMarkers(
   const moveit_msgs::msg::RobotTrajectory& stage1_traj,
   const moveit_msgs::msg::RobotTrajectory& stage2_traj) const
 {
+  // 标记约定：
+  // - 球体：stage1 几何逻辑关键点
+  // - 折线：各阶段末端轨迹
   visualization_msgs::msg::MarkerArray array;
   const std::string frame = system_config_.planning_frame;
 
