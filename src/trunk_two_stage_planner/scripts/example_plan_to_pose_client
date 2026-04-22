@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+
+import argparse
+import sys
+
+import rclpy
+from rclpy.node import Node
+
+from trunk_two_stage_planner.srv import PlanToPose
+
+
+class ExamplePlanToPoseClient(Node):
+    def __init__(self) -> None:
+        super().__init__("example_plan_to_pose_client")
+        self._client = self.create_client(
+            PlanToPose, "/two_stage_planner/plan_to_pose"
+        )
+
+    def wait_for_service(self) -> bool:
+        self.get_logger().info("Waiting for /two_stage_planner/plan_to_pose ...")
+        return self._client.wait_for_service(timeout_sec=10.0)
+
+    def send_request(
+        self,
+        use_external_target: bool,
+        position: list[float],
+        orientation: list[float],
+    ) -> PlanToPose.Response | None:
+        request = PlanToPose.Request()
+        request.use_external_target = use_external_target
+        request.target_position = position
+        request.target_orientation = orientation
+
+        future = self._client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+        return future.result()
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Example upper-layer client for /two_stage_planner/plan_to_pose. "
+            "Use --use-default to trigger local default target, or provide both "
+            "--position and --orientation to send an external pose."
+        )
+    )
+    parser.add_argument(
+        "--use-default",
+        action="store_true",
+        help="Ignore external pose and use the planner's local default target.",
+    )
+    parser.add_argument(
+        "--position",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+        help="External target position as three floats.",
+    )
+    parser.add_argument(
+        "--orientation",
+        nargs=4,
+        type=float,
+        metavar=("QX", "QY", "QZ", "QW"),
+        help="External target orientation quaternion as four floats.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    if not args.use_default:
+      if args.position is None or args.orientation is None:
+        parser.error(
+            "Either pass --use-default, or provide both --position and --orientation."
+        )
+
+    rclpy.init(args=None)
+    node = ExamplePlanToPoseClient()
+    try:
+        if not node.wait_for_service():
+            node.get_logger().error("Service not available within timeout.")
+            return 1
+
+        position = [0.0, 0.0, 0.0]
+        orientation = [0.0, 0.0, 0.0, 1.0]
+        if not args.use_default:
+            position = list(args.position)
+            orientation = list(args.orientation)
+
+        response = node.send_request(
+            use_external_target=not args.use_default,
+            position=position,
+            orientation=orientation,
+        )
+        if response is None:
+            node.get_logger().error("No response received from service.")
+            return 2
+
+        print(f"success: {response.success}")
+        print(f"message: {response.message}")
+        print(f"used_external_target: {response.used_external_target}")
+        pose = response.used_target_pose
+        print(
+            "used_target_pose.position: "
+            f"[{pose.position.x:.6f}, {pose.position.y:.6f}, {pose.position.z:.6f}]"
+        )
+        print(
+            "used_target_pose.orientation: "
+            f"[{pose.orientation.x:.6f}, {pose.orientation.y:.6f}, "
+            f"{pose.orientation.z:.6f}, {pose.orientation.w:.6f}]"
+        )
+        return 0 if response.success else 3
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

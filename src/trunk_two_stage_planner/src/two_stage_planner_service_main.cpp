@@ -1,10 +1,16 @@
-#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <exception>
-#include <thread>
+#include <functional>
+#include <memory>
+#include <string>
 
+#include <Eigen/Geometry>
+#include <geometry_msgs/msg/pose.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include "trunk_two_stage_planner/robot_kinematics_helper.hpp"
+#include "trunk_two_stage_planner/srv/plan_to_pose.hpp"
 #include "trunk_two_stage_planner/two_stage_planner_manager.hpp"
 
 namespace trunk_two_stage_planner
@@ -13,8 +19,6 @@ namespace trunk_two_stage_planner
 namespace
 {
 
-// 参数声明辅助函数：
-// 兼容 launch 参数覆盖与 auto-declare 模式，避免重复声明异常。
 void declareIfMissingBool(const rclcpp::Node::SharedPtr& node, const std::string& name, bool value)
 {
   if (!node->has_parameter(name)) {
@@ -54,8 +58,6 @@ void declareIfMissingDoubleArray(
 
 PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
 {
-  // 该加载器定义算法层“参数契约”：
-  // 调整这些字段会改变 stage1/stage2 决策策略。
   PlannerConfig config;
 
   declareIfMissingString(node, "robot_description_package", config.robot_description_package);
@@ -114,6 +116,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.joint3_name = node->get_parameter("joint3_name").as_string();
   config.joint4_name = node->get_parameter("joint4_name").as_string();
   config.reference_link_name = node->get_parameter("reference_link_name").as_string();
+
   config.q_start = node->get_parameter("q_start").as_double_array();
   config.goal_joint_target = node->get_parameter("goal_joint_target").as_double_array();
   config.q_goal_fallback = node->get_parameter("q_goal_fallback").as_double_array();
@@ -124,6 +127,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.ik_attempts = node->get_parameter("ik_attempts").as_int();
   config.ik_timeout = node->get_parameter("ik_timeout").as_double();
   config.ik_limit_penalty_weight = node->get_parameter("ik_limit_penalty_weight").as_double();
+
   config.stage1_q1_samples = node->get_parameter("stage1_q1_samples").as_int();
   config.stage1_q2_samples = node->get_parameter("stage1_q2_samples").as_int();
   config.w1 = node->get_parameter("w1").as_double();
@@ -134,6 +138,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.stage2_pose_wR = node->get_parameter("stage2_pose_wR").as_double();
   config.stage2_pose_epsilon = node->get_parameter("stage2_pose_epsilon").as_double();
   config.joint_limit_margin_ratio = node->get_parameter("joint_limit_margin_ratio").as_double();
+
   config.stage2_eval_q3_samples = node->get_parameter("stage2_eval_q3_samples").as_int();
   config.stage2_eval_q4_samples = node->get_parameter("stage2_eval_q4_samples").as_int();
   config.stage2_q3_samples = node->get_parameter("stage2_q3_samples").as_int();
@@ -141,19 +146,18 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.stage2_pos_weight = node->get_parameter("stage2_pos_weight").as_double();
   config.stage2_ori_weight = node->get_parameter("stage2_ori_weight").as_double();
   config.stage2_q34_bias_weight = node->get_parameter("stage2_q34_bias_weight").as_double();
+
   config.stage1_duration = node->get_parameter("stage1_duration").as_double();
   config.stage2_duration = node->get_parameter("stage2_duration").as_double();
   config.dt = node->get_parameter("dt").as_double();
   config.output_dir = node->get_parameter("output_dir").as_string();
-
   return config;
 }
 
 TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
 {
-  // 运行时执行调节项（MoveIt 与可视化相关）。
-  // 注意：`stage2_q12_tolerance` 直接决定 stage2 对阶段分离保持的严格度。
   TwoStageSystemConfig config;
+
   declareIfMissingString(node, "stage1_group_name", config.stage1_group_name);
   declareIfMissingString(node, "stage2_group_name", config.stage2_group_name);
   declareIfMissingString(node, "planning_frame", config.planning_frame);
@@ -174,13 +178,6 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(node, "stage1_q4_tolerance", config.stage1_q4_tolerance);
   declareIfMissingDouble(node, "stage1_arc_height", config.stage1_arc_height);
   declareIfMissingDouble(node, "stage2_q12_tolerance", config.stage2_q12_tolerance);
-  declareIfMissingBool(node, "use_live_joint_state_as_start", config.use_live_joint_state_as_start);
-  declareIfMissingBool(
-    node,
-    "allow_start_state_fallback_to_config",
-    config.allow_start_state_fallback_to_config);
-  declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
-  declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
   declareIfMissingBool(node, "export_csv", config.export_csv);
 
   config.stage1_group_name = node->get_parameter("stage1_group_name").as_string();
@@ -203,11 +200,6 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.stage1_q4_tolerance = node->get_parameter("stage1_q4_tolerance").as_double();
   config.stage1_arc_height = node->get_parameter("stage1_arc_height").as_double();
   config.stage2_q12_tolerance = node->get_parameter("stage2_q12_tolerance").as_double();
-  config.use_live_joint_state_as_start = node->get_parameter("use_live_joint_state_as_start").as_bool();
-  config.allow_start_state_fallback_to_config =
-    node->get_parameter("allow_start_state_fallback_to_config").as_bool();
-  config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
-  config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
   config.export_csv = node->get_parameter("export_csv").as_bool();
   return config;
 }
@@ -216,9 +208,6 @@ geometry_msgs::msg::Pose buildTargetPose(
   const PlannerConfig& config,
   const RobotKinematicsHelper& helper)
 {
-  // 策略切换：
-  // - true：由配置的 goal 关节状态 FK 推导笛卡尔目标（可复现实验模式）
-  // - false：直接使用 target_position/target_orientation（任务驱动模式）
   if (config.use_goal_state_as_target_pose) {
     const Eigen::Isometry3d tf =
       helper.getLinkTransform(config.goal_joint_target, helper.getTipLinkName());
@@ -247,71 +236,145 @@ geometry_msgs::msg::Pose buildTargetPose(
 
 }  // namespace
 
+class TwoStagePlannerServiceNode
+{
+public:
+  explicit TwoStagePlannerServiceNode(const rclcpp::Node::SharedPtr& node)
+  : node_(node), manager_(node)
+  {
+  }
+
+  bool initialize()
+  {
+    algorithm_config_ = loadAlgorithmConfig(node_);
+    system_config_ = loadSystemConfig(node_);
+
+    if (!manager_.initialize(algorithm_config_, system_config_)) {
+      return false;
+    }
+    if (!pose_helper_.initialize(node_, algorithm_config_)) {
+      return false;
+    }
+
+    service_ = node_->create_service<trunk_two_stage_planner::srv::PlanToPose>(
+      "/two_stage_planner/plan_to_pose",
+      std::bind(
+        &TwoStagePlannerServiceNode::handlePlanToPose,
+        this,
+        std::placeholders::_1,
+        std::placeholders::_2));
+    return true;
+  }
+
+private:
+  geometry_msgs::msg::Pose buildDefaultTargetPose() const
+  {
+    return buildTargetPose(algorithm_config_, pose_helper_);
+  }
+
+  bool buildValidatedExternalPose(
+    const std::shared_ptr<trunk_two_stage_planner::srv::PlanToPose::Request>& request,
+    geometry_msgs::msg::Pose& pose,
+    std::string& error_message) const
+  {
+    for (double value : request->target_position) {
+      if (!std::isfinite(value)) {
+        error_message = "target_position contains non-finite values.";
+        return false;
+      }
+    }
+
+    for (double value : request->target_orientation) {
+      if (!std::isfinite(value)) {
+        error_message = "target_orientation contains non-finite values.";
+        return false;
+      }
+    }
+
+    Eigen::Quaterniond q(
+      request->target_orientation[3],
+      request->target_orientation[0],
+      request->target_orientation[1],
+      request->target_orientation[2]);
+    if (q.norm() < 1e-6) {
+      error_message = "target_orientation quaternion norm is too small.";
+      return false;
+    }
+    q.normalize();
+
+    pose.position.x = request->target_position[0];
+    pose.position.y = request->target_position[1];
+    pose.position.z = request->target_position[2];
+    pose.orientation.x = q.x();
+    pose.orientation.y = q.y();
+    pose.orientation.z = q.z();
+    pose.orientation.w = q.w();
+    return true;
+  }
+
+  void handlePlanToPose(
+    const std::shared_ptr<trunk_two_stage_planner::srv::PlanToPose::Request> request,
+    std::shared_ptr<trunk_two_stage_planner::srv::PlanToPose::Response> response)
+  {
+    geometry_msgs::msg::Pose target_pose;
+    std::string error_message;
+    bool used_external = false;
+
+    if (request->use_external_target) {
+      if (!buildValidatedExternalPose(request, target_pose, error_message)) {
+        response->success = false;
+        response->message = error_message;
+        response->used_target_pose = geometry_msgs::msg::Pose();
+        response->used_external_target = true;
+        return;
+      }
+      used_external = true;
+    } else {
+      target_pose = buildDefaultTargetPose();
+    }
+
+    const bool ok = manager_.planTwoStageToTarget(target_pose);
+    response->success = ok;
+    response->message = ok ? "Planning succeeded." : "Planning failed.";
+    response->used_target_pose = target_pose;
+    response->used_external_target = used_external;
+  }
+
+  rclcpp::Node::SharedPtr node_;
+  PlannerConfig algorithm_config_;
+  TwoStageSystemConfig system_config_;
+  RobotKinematicsHelper pose_helper_;
+  TwoStagePlannerManager manager_;
+  rclcpp::Service<trunk_two_stage_planner::srv::PlanToPose>::SharedPtr service_;
+};
+
 }  // namespace trunk_two_stage_planner
 
 int main(int argc, char* argv[])
 {
-  // 文件职责：
-  // 工程运行模式入口（MoveIt + RViz 集成）。
-  // 主链路：加载参数 -> 初始化 manager -> 计算目标 -> 执行两阶段规划。
   rclcpp::init(argc, argv);
 
   try {
+    // Reuse the existing parameter root so current system params file can be passed directly.
     auto node = rclcpp::Node::make_shared(
       "two_stage_planner_system",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
 
-    rclcpp::executors::SingleThreadedExecutor executor;
-    executor.add_node(node);
-    std::thread spinner([&executor]() { executor.spin(); });
-
-    auto algorithm_config = trunk_two_stage_planner::loadAlgorithmConfig(node);
-    auto system_config = trunk_two_stage_planner::loadSystemConfig(node);
-
-    trunk_two_stage_planner::TwoStagePlannerManager manager(node);
-    if (!manager.initialize(algorithm_config, system_config)) {
-      RCLCPP_ERROR(node->get_logger(), "Failed to initialize TwoStagePlannerManager.");
-      executor.cancel();
-      spinner.join();
-      rclcpp::shutdown();
-      return 1;
-    }
-
-    trunk_two_stage_planner::RobotKinematicsHelper pose_helper;
-    if (!pose_helper.initialize(node, algorithm_config)) {
-      RCLCPP_ERROR(node->get_logger(), "Failed to initialize target-pose helper.");
-      executor.cancel();
-      spinner.join();
-      rclcpp::shutdown();
-      return 1;
-    }
-
-    const auto target_pose = trunk_two_stage_planner::buildTargetPose(
-      algorithm_config, pose_helper);
-
-    if (!manager.planTwoStageToTarget(target_pose)) {
-      RCLCPP_ERROR(node->get_logger(), "Two-stage planning system failed.");
-      executor.cancel();
-      spinner.join();
+    trunk_two_stage_planner::TwoStagePlannerServiceNode service_node(node);
+    if (!service_node.initialize()) {
+      RCLCPP_ERROR(node->get_logger(), "Failed to initialize TwoStagePlannerServiceNode.");
       rclcpp::shutdown();
       return 1;
     }
 
     RCLCPP_INFO(
       node->get_logger(),
-      "Two-stage planner system is running. Keep RViz open to inspect trajectories and markers.");
-
-    while (rclcpp::ok()) {
-      // 保持节点存活，便于规划完成后继续在 RViz 观察轨迹与标记。
-      std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    }
-
-    executor.cancel();
-    spinner.join();
+      "Two-stage planner service is ready at /two_stage_planner/plan_to_pose");
+    rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "two_stage_planner_system: %s\n", e.what());
+    std::fprintf(stderr, "two_stage_planner_service: %s\n", e.what());
     rclcpp::shutdown();
     return 2;
   }

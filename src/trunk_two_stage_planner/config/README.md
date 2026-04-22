@@ -50,6 +50,10 @@
   - `planning_time`, `planning_attempts`
   - `velocity_scaling`, `acceleration_scaling`
   - `stage2_q12_tolerance`：stage2 锁定 q1/q2 的容差
+  - `use_live_joint_state_as_start`：是否优先使用实时 `/joint_states` 作为规划起点
+  - `allow_start_state_fallback_to_config`：若实时状态暂时不可用，是否回退到配置里的 `q_start`
+  - `live_start_state_wait_sec`：等待实时起点到来的最长时间
+  - `joint_states_topic`：当前关节状态订阅话题
 
 - **输出**
   - `output_dir`
@@ -61,6 +65,8 @@
 - 先改一个维度，再看结果；不要同时大改多个参数。
 - 先保证“可规划成功”，再追求“更严格阶段分离”。
 - 采样数提高会显著增加耗时，先做小步调整。
+- 在线运行时，推荐开启 `use_live_joint_state_as_start: true`，让系统从当前真实关节状态起步。
+- 若启动初期 `/joint_states` 可能有延迟，可保留 `allow_start_state_fallback_to_config: true` 作为兜底。
 
 ---
 
@@ -111,10 +117,59 @@
 
 ## 按问题快速定位应该改哪里
 
+- **我要让上层系统通过 service 直接给目标位姿**
+  - 启动：
+    - `ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py`
+  - 调用接口：
+    - `/two_stage_planner/plan_to_pose`
+    - 类型：`trunk_two_stage_planner/srv/PlanToPose`
+  - 若上层传入：
+    - `use_external_target: true`
+    - `target_position: [x, y, z]`
+    - `target_orientation: [qx, qy, qz, qw]`
+    则系统优先使用外部目标位姿。
+  - 若上层不传（或 `use_external_target: false`）：
+    - 系统回退到本地默认目标逻辑
+    - 默认目标仍由 `two_stage_system_params.yaml` 决定
+
+- **我要验证 service 模式是否工作正常**
+  - 可使用示例客户端：
+    - `ros2 run trunk_two_stage_planner example_plan_to_pose_client --use-default`
+    - 或：
+      `ros2 run trunk_two_stage_planner example_plan_to_pose_client --position 0.196101 0.0 0.602433 --orientation -0.014919 -0.098712 0.148692 0.983831`
+  - 这个脚本模拟“上层系统”发起一次 service 请求。
+
 - **我想直接输入目标位姿 `T_d`**
   - 改 `two_stage_system_params.yaml`：
     - `use_goal_state_as_target_pose: false`
     - 填 `target_position` 和 `target_orientation`
+
+- **我希望系统从机器人当前状态开始规划，而不是从固定 `q_start` 开始**
+  - 改 `two_stage_system_params.yaml`：
+    - `use_live_joint_state_as_start: true`
+    - `joint_states_topic: "/joint_states"`
+  - 如果你希望状态没到就直接失败：
+    - `allow_start_state_fallback_to_config: false`
+  - 如果你希望先等一会再决定是否回退：
+    - 调 `live_start_state_wait_sec`
+
+- **我想保留固定起点模式（例如离线复现或对比实验）**
+  - 改 `two_stage_system_params.yaml`：
+    - `use_live_joint_state_as_start: false`
+  - 此时系统直接使用配置里的 `q_start`
+
+- **service 没收到外部位姿时，系统到底会用什么目标**
+  - 改 `two_stage_system_params.yaml`：
+    - 若 `use_goal_state_as_target_pose: true`
+      - 使用 `goal_joint_target` 经过 FK 得到目标位姿
+    - 若 `use_goal_state_as_target_pose: false`
+      - 使用 `target_position` + `target_orientation`
+
+- **我要给 service 模式准备默认兜底目标**
+  - 改 `two_stage_system_params.yaml`：
+    - `goal_joint_target`
+    - 或 `target_position` / `target_orientation`
+  - service 模式和普通系统模式共用这份默认参数文件。
 
 - **阶段2经常失败 / 阶段切换太严格**
   - 改 `two_stage_system_params.yaml`：
@@ -141,6 +196,13 @@
 ## 维护要求
 
 - 修改前建议备份一份当前 YAML。
+- service 模式下，`two_stage_system_params.yaml` 依然是默认目标与系统参数的来源，不会因为新增 service 而失效。
+- 若启用了 `use_live_joint_state_as_start: true`，则本次规划实际使用的 `q_start` 可能与 YAML 里的默认值不同。
+- 若需要严格复现实验结果，建议关闭实时起点模式，固定使用配置里的 `q_start`。
+- 如果上层要稳定调用，请约定：
+  - `target_position` 固定 3 维
+  - `target_orientation` 固定 4 维四元数 `[qx, qy, qz, qw]`
+  - 所有数值为有限实数
 - 提交配置变更时，建议在提交说明里写明：
   - 改了哪些参数
   - 预期影响是什么

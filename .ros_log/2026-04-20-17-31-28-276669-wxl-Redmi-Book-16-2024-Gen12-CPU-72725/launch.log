@@ -1,0 +1,37 @@
+1776677488.2774286 [INFO] [launch]: All log files can be found below /home/wxl/ws_moveit2/.ros_log/2026-04-20-17-31-28-276669-wxl-Redmi-Book-16-2024-Gen12-CPU-72725
+1776677488.2775409 [INFO] [launch]: Default logging verbosity is set to INFO
+1776677488.8222318 [INFO] [static_transform_publisher-1]: process started with pid [72730]
+1776677488.8224285 [INFO] [robot_state_publisher-2]: process started with pid [72732]
+1776677488.8225160 [INFO] [move_group-3]: process started with pid [72734]
+1776677488.8225791 [INFO] [ros2_control_node-4]: process started with pid [72736]
+1776677488.8226380 [INFO] [spawner-5]: process started with pid [72738]
+1776677488.8226950 [INFO] [spawner-6]: process started with pid [72740]
+1776677488.8404286 [static_transform_publisher-1] [INFO] [1776677488.840100886] [static_transform_publisher0]: Spinning until stopped - publishing transform
+1776677488.8406177 [static_transform_publisher-1] translation: ('0.000000', '0.000000', '0.000000')
+1776677488.8406980 [static_transform_publisher-1] rotation: ('0.000000', '0.000000', '0.000000', '1.000000')
+1776677488.8407660 [static_transform_publisher-1] from 'world' to 'chassis_base_link'
+1776677488.8535647 [ros2_control_node-4] [WARN] [1776677488.853359994] [controller_manager]: [Deprecated] Passing the robot description parameter directly to the control_manager node is deprecated. Use '~/robot_description' topic from 'robot_state_publisher' instead.
+1776677488.8538563 [ros2_control_node-4] [INFO] [1776677488.853518289] [resource_manager]: Loading hardware 'FakeSystem' 
+1776677488.8540385 [ros2_control_node-4] [INFO] [1776677488.853854115] [resource_manager]: Initialize hardware 'FakeSystem' 
+1776677488.8540924 [ros2_control_node-4] [INFO] [1776677488.853882306] [resource_manager]: Successful initialization of hardware 'FakeSystem'
+1776677488.8541338 [ros2_control_node-4] [INFO] [1776677488.853918248] [resource_manager]: 'configure' hardware 'FakeSystem' 
+1776677488.8541596 [ros2_control_node-4] [INFO] [1776677488.853925345] [resource_manager]: Successful 'configure' of hardware 'FakeSystem'
+1776677488.8541985 [ros2_control_node-4] [INFO] [1776677488.853930984] [resource_manager]: 'activate' hardware 'FakeSystem' 
+1776677488.8542249 [ros2_control_node-4] [INFO] [1776677488.853935586] [resource_manager]: Successful 'activate' of hardware 'FakeSystem'
+1776677488.8566470 [ros2_control_node-4] [INFO] [1776677488.856435760] [controller_manager]: update rate is 100 Hz
+1776677488.8568039 [ros2_control_node-4] [INFO] [1776677488.856466103] [controller_manager]: Spawning controller_manager RT thread with scheduler priority: 50
+1776677488.8571155 [ros2_control_node-4] [WARN] [1776677488.856535907] [controller_manager]: Could not enable FIFO RT scheduling policy: with error number <1>(Operation not permitted). See [https://control.ros.org/master/doc/ros2_control/controller_manager/doc/userdoc.html] for details on how to enable realtime scheduling.
+1776677489.0318229 [ros2_control_node-4] [INFO] [1776677489.031592500] [controller_manager]: Loading controller 'trunk_group_controller'
+1776677489.0386367 [ros2_control_node-4] [WARN] [1776677489.038338616] [trunk_group_controller]: [Deprecated]: "allow_nonzero_velocity_at_trajectory_end" is set to true. The default behavior will change to false.
+1776677489.0479639 [ros2_control_node-4] [INFO] [1776677489.047722873] [controller_manager]: Loading controller 'joint_state_broadcaster'
+1776677489.0589724 [ros2_control_node-4] [INFO] [1776677489.058807372] [controller_manager]: Configuring controller 'trunk_group_controller'
+1776677489.0593233 [ros2_control_node-4] [INFO] [1776677489.058964914] [trunk_group_controller]: No specific joint names are used for command interfaces. Using 'joints' parameter.
+1776677489.0594277 [ros2_control_node-4] [INFO] [1776677489.058989094] [trunk_group_controller]: Command interfaces are [position] and state interfaces are [position velocity].
+1776677489.0594711 [ros2_control_node-4] [INFO] [1776677489.059010268] [trunk_group_controller]: Using 'splines' interpolation method.
+1776677489.0601983 [ros2_control_node-4] [INFO] [1776677489.060044079] [trunk_group_controller]: Controller state will be published at 50.00 Hz.
+1776677489.0620134 [ros2_control_node-4] [INFO] [1776677489.061866702] [trunk_group_controller]: Action status changes will be monitored at 20.00 Hz.
+1776677489.0873349 [ros2_control_node-4] [INFO] [1776677489.087105620] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+1776677489.0877659 [ros2_control_node-4] [INFO] [1776677489.087175041] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+1776677489.2184265 [INFO] [spawner-5]: process has finished cleanly [pid 72738]
+1776677489.2448699 [INFO] [spawner-6]: process has finished cleanly [pid 72740]
+1776677490.8455348 [INFO] [two_stage_planner_service-7]: process started with pid [72834]

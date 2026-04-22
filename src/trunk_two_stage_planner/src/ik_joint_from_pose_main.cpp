@@ -1,11 +1,14 @@
-#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <exception>
-#include <thread>
+#include <iomanip>
+#include <sstream>
 
+#include <Eigen/Geometry>
 #include <rclcpp/rclcpp.hpp>
 
-#include "trunk_two_stage_planner/two_stage_planner_manager.hpp"
+#include "trunk_two_stage_planner/robot_kinematics_helper.hpp"
+#include "trunk_two_stage_planner/two_stage_planner.hpp"
 
 namespace trunk_two_stage_planner
 {
@@ -13,8 +16,27 @@ namespace trunk_two_stage_planner
 namespace
 {
 
+double squaredNormDiff(const std::vector<double>& a, const std::vector<double>& b)
+{
+  if (a.size() != b.size()) {
+    throw std::runtime_error("Vector size mismatch while computing IK candidate distance.");
+  }
+
+  double sum = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const double d = a[i] - b[i];
+    sum += d * d;
+  }
+  return sum;
+}
+
+bool nearlySameState(const std::vector<double>& a, const std::vector<double>& b, double tol = 1e-6)
+{
+  return squaredNormDiff(a, b) <= tol * tol * static_cast<double>(a.size());
+}
+
 // 参数声明辅助函数：
-// 兼容 launch 参数覆盖与 auto-declare 模式，避免重复声明异常。
+// 复用当前工程的参数加载风格，确保既能吃默认值，也能吃外部 params-file 覆盖。
 void declareIfMissingBool(const rclcpp::Node::SharedPtr& node, const std::string& name, bool value)
 {
   if (!node->has_parameter(name)) {
@@ -54,8 +76,8 @@ void declareIfMissingDoubleArray(
 
 PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
 {
-  // 该加载器定义算法层“参数契约”：
-  // 调整这些字段会改变 stage1/stage2 决策策略。
+  // 该工具只需要算法层配置，不需要 MoveIt 运行时调度配置。
+  // 这里保持与系统主入口一致，避免工具与主程序出现参数语义漂移。
   PlannerConfig config;
 
   declareIfMissingString(node, "robot_description_package", config.robot_description_package);
@@ -79,7 +101,6 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingInt(node, "ik_attempts", config.ik_attempts);
   declareIfMissingDouble(node, "ik_timeout", config.ik_timeout);
   declareIfMissingDouble(node, "ik_limit_penalty_weight", config.ik_limit_penalty_weight);
-
   declareIfMissingInt(node, "stage1_q1_samples", config.stage1_q1_samples);
   declareIfMissingInt(node, "stage1_q2_samples", config.stage1_q2_samples);
   declareIfMissingDouble(node, "w1", config.w1);
@@ -90,7 +111,6 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(node, "stage2_pose_wR", config.stage2_pose_wR);
   declareIfMissingDouble(node, "stage2_pose_epsilon", config.stage2_pose_epsilon);
   declareIfMissingDouble(node, "joint_limit_margin_ratio", config.joint_limit_margin_ratio);
-
   declareIfMissingInt(node, "stage2_eval_q3_samples", config.stage2_eval_q3_samples);
   declareIfMissingInt(node, "stage2_eval_q4_samples", config.stage2_eval_q4_samples);
   declareIfMissingInt(node, "stage2_q3_samples", config.stage2_q3_samples);
@@ -98,7 +118,6 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(node, "stage2_pos_weight", config.stage2_pos_weight);
   declareIfMissingDouble(node, "stage2_ori_weight", config.stage2_ori_weight);
   declareIfMissingDouble(node, "stage2_q34_bias_weight", config.stage2_q34_bias_weight);
-
   declareIfMissingDouble(node, "stage1_duration", config.stage1_duration);
   declareIfMissingDouble(node, "stage2_duration", config.stage2_duration);
   declareIfMissingDouble(node, "dt", config.dt);
@@ -145,104 +164,104 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.stage2_duration = node->get_parameter("stage2_duration").as_double();
   config.dt = node->get_parameter("dt").as_double();
   config.output_dir = node->get_parameter("output_dir").as_string();
-
   return config;
 }
 
-TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
+std::string toYamlArray(const std::vector<double>& values)
 {
-  // 运行时执行调节项（MoveIt 与可视化相关）。
-  // 注意：`stage2_q12_tolerance` 直接决定 stage2 对阶段分离保持的严格度。
-  TwoStageSystemConfig config;
-  declareIfMissingString(node, "stage1_group_name", config.stage1_group_name);
-  declareIfMissingString(node, "stage2_group_name", config.stage2_group_name);
-  declareIfMissingString(node, "planning_frame", config.planning_frame);
-  declareIfMissingString(node, "marker_topic", config.marker_topic);
-  declareIfMissingString(node, "display_trajectory_topic", config.display_trajectory_topic);
-  declareIfMissingDouble(node, "planning_time", config.planning_time);
-  declareIfMissingInt(node, "planning_attempts", config.planning_attempts);
-  declareIfMissingDouble(node, "velocity_scaling", config.velocity_scaling);
-  declareIfMissingDouble(node, "acceleration_scaling", config.acceleration_scaling);
-  declareIfMissingDouble(node, "stage1_eef_step", config.stage1_eef_step);
-  declareIfMissingDouble(node, "stage1_jump_threshold", config.stage1_jump_threshold);
-  declareIfMissingDouble(node, "stage1_min_fraction", config.stage1_min_fraction);
-  declareIfMissingInt(node, "stage1_waypoint_count", config.stage1_waypoint_count);
-  declareIfMissingBool(node, "stage1_use_cartesian", config.stage1_use_cartesian);
-  declareIfMissingString(node, "stage1_cartesian_mode", config.stage1_cartesian_mode);
-  declareIfMissingString(node, "stage1_reference_link", config.stage1_reference_link);
-  declareIfMissingBool(node, "stage1_lock_q4", config.stage1_lock_q4);
-  declareIfMissingDouble(node, "stage1_q4_tolerance", config.stage1_q4_tolerance);
-  declareIfMissingDouble(node, "stage1_arc_height", config.stage1_arc_height);
-  declareIfMissingDouble(node, "stage2_q12_tolerance", config.stage2_q12_tolerance);
-  declareIfMissingBool(node, "use_live_joint_state_as_start", config.use_live_joint_state_as_start);
-  declareIfMissingBool(
-    node,
-    "allow_start_state_fallback_to_config",
-    config.allow_start_state_fallback_to_config);
-  declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
-  declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
-  declareIfMissingBool(node, "export_csv", config.export_csv);
-
-  config.stage1_group_name = node->get_parameter("stage1_group_name").as_string();
-  config.stage2_group_name = node->get_parameter("stage2_group_name").as_string();
-  config.planning_frame = node->get_parameter("planning_frame").as_string();
-  config.marker_topic = node->get_parameter("marker_topic").as_string();
-  config.display_trajectory_topic = node->get_parameter("display_trajectory_topic").as_string();
-  config.planning_time = node->get_parameter("planning_time").as_double();
-  config.planning_attempts = node->get_parameter("planning_attempts").as_int();
-  config.velocity_scaling = node->get_parameter("velocity_scaling").as_double();
-  config.acceleration_scaling = node->get_parameter("acceleration_scaling").as_double();
-  config.stage1_eef_step = node->get_parameter("stage1_eef_step").as_double();
-  config.stage1_jump_threshold = node->get_parameter("stage1_jump_threshold").as_double();
-  config.stage1_min_fraction = node->get_parameter("stage1_min_fraction").as_double();
-  config.stage1_waypoint_count = node->get_parameter("stage1_waypoint_count").as_int();
-  config.stage1_use_cartesian = node->get_parameter("stage1_use_cartesian").as_bool();
-  config.stage1_cartesian_mode = node->get_parameter("stage1_cartesian_mode").as_string();
-  config.stage1_reference_link = node->get_parameter("stage1_reference_link").as_string();
-  config.stage1_lock_q4 = node->get_parameter("stage1_lock_q4").as_bool();
-  config.stage1_q4_tolerance = node->get_parameter("stage1_q4_tolerance").as_double();
-  config.stage1_arc_height = node->get_parameter("stage1_arc_height").as_double();
-  config.stage2_q12_tolerance = node->get_parameter("stage2_q12_tolerance").as_double();
-  config.use_live_joint_state_as_start = node->get_parameter("use_live_joint_state_as_start").as_bool();
-  config.allow_start_state_fallback_to_config =
-    node->get_parameter("allow_start_state_fallback_to_config").as_bool();
-  config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
-  config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
-  config.export_csv = node->get_parameter("export_csv").as_bool();
-  return config;
+  // 输出格式故意做成可直接复制回 YAML 的数组形式。
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(6);
+  oss << "[";
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      oss << ", ";
+    }
+    oss << values[i];
+  }
+  oss << "]";
+  return oss.str();
 }
 
-geometry_msgs::msg::Pose buildTargetPose(
+double jointLimitPenalty(
+  const RobotKinematicsHelper& helper,
   const PlannerConfig& config,
-  const RobotKinematicsHelper& helper)
+  const std::vector<double>& q)
 {
-  // 策略切换：
-  // - true：由配置的 goal 关节状态 FK 推导笛卡尔目标（可复现实验模式）
-  // - false：直接使用 target_position/target_orientation（任务驱动模式）
-  if (config.use_goal_state_as_target_pose) {
-    const Eigen::Isometry3d tf =
-      helper.getLinkTransform(config.goal_joint_target, helper.getTipLinkName());
-    geometry_msgs::msg::Pose pose;
-    pose.position.x = tf.translation().x();
-    pose.position.y = tf.translation().y();
-    pose.position.z = tf.translation().z();
-    const Eigen::Quaterniond q(tf.rotation());
-    pose.orientation.x = q.x();
-    pose.orientation.y = q.y();
-    pose.orientation.z = q.z();
-    pose.orientation.w = q.w();
-    return pose;
+  constexpr double inf = std::numeric_limits<double>::infinity();
+  const auto& joint_names = helper.getJointNames();
+  if (q.size() != joint_names.size()) {
+    throw std::runtime_error("Joint vector size does not match planning group dimension.");
   }
 
-  geometry_msgs::msg::Pose pose;
-  pose.position.x = config.target_position[0];
-  pose.position.y = config.target_position[1];
-  pose.position.z = config.target_position[2];
-  pose.orientation.x = config.target_orientation[0];
-  pose.orientation.y = config.target_orientation[1];
-  pose.orientation.z = config.target_orientation[2];
-  pose.orientation.w = config.target_orientation[3];
-  return pose;
+  double penalty = 0.0;
+  for (std::size_t i = 0; i < joint_names.size(); ++i) {
+    const auto [lower, upper] = helper.getJointPositionBounds(joint_names[i]);
+    const double range = upper - lower;
+    if (range <= 0.0) {
+      continue;
+    }
+    if (q[i] < lower || q[i] > upper) {
+      return inf;
+    }
+
+    const double margin = std::min(q[i] - lower, upper - q[i]);
+    const double margin_ratio = margin / range;
+    if (margin_ratio < config.joint_limit_margin_ratio) {
+      const double normalized =
+        (config.joint_limit_margin_ratio - margin_ratio) / config.joint_limit_margin_ratio;
+      penalty += normalized * normalized;
+    }
+  }
+  return penalty;
+}
+
+double ikCandidateCost(
+  const RobotKinematicsHelper& helper,
+  const PlannerConfig& config,
+  const std::vector<double>& candidate,
+  const std::vector<double>& q_start)
+{
+  return squaredNormDiff(candidate, q_start) +
+         config.ik_limit_penalty_weight * jointLimitPenalty(helper, config, candidate);
+}
+
+std::vector<std::vector<double>> collectIkCandidates(
+  const RobotKinematicsHelper& helper,
+  const PlannerConfig& config,
+  const geometry_msgs::msg::Pose& target_pose)
+{
+  std::vector<std::vector<double>> candidates;
+  if (!helper.hasIKSolver()) {
+    return candidates;
+  }
+
+  const auto try_seed = [&](const std::vector<double>& seed) {
+    std::vector<double> candidate;
+    if (helper.solveIK(target_pose, candidate, seed) && helper.isStateWithinBounds(candidate)) {
+      for (const auto& existing : candidates) {
+        if (nearlySameState(existing, candidate)) {
+          return;
+        }
+      }
+      candidates.push_back(candidate);
+    }
+  };
+
+  try_seed(config.q_start);
+  if (config.goal_joint_target.size() == config.q_start.size()) {
+    try_seed(config.goal_joint_target);
+  }
+  if (config.q_goal_fallback.size() == config.q_start.size()) {
+    try_seed(config.q_goal_fallback);
+  }
+
+  std::mt19937 rng(42);
+  for (int i = 0; i < config.ik_attempts; ++i) {
+    try_seed(helper.sampleRandomState(rng));
+  }
+
+  return candidates;
 }
 
 }  // namespace
@@ -252,8 +271,8 @@ geometry_msgs::msg::Pose buildTargetPose(
 int main(int argc, char* argv[])
 {
   // 文件职责：
-  // 工程运行模式入口（MoveIt + RViz 集成）。
-  // 主链路：加载参数 -> 初始化 manager -> 计算目标 -> 执行两阶段规划。
+  // 这是一个独立的 IK 反解小工具。
+  // 输入 target_position / target_orientation，输出可粘贴的 goal_joint_target。
   rclcpp::init(argc, argv);
 
   try {
@@ -261,58 +280,90 @@ int main(int argc, char* argv[])
       "two_stage_planner_system",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
 
-    rclcpp::executors::SingleThreadedExecutor executor;
-    executor.add_node(node);
-    std::thread spinner([&executor]() { executor.spin(); });
+    auto config = trunk_two_stage_planner::loadAlgorithmConfig(node);
 
-    auto algorithm_config = trunk_two_stage_planner::loadAlgorithmConfig(node);
-    auto system_config = trunk_two_stage_planner::loadSystemConfig(node);
+    // 严格检查位姿输入维度，避免静默读取错误参数。
+    if (config.target_position.size() != 3) {
+      throw std::runtime_error("target_position must contain exactly 3 values.");
+    }
+    if (config.target_orientation.size() != 4) {
+      throw std::runtime_error("target_orientation must contain exactly 4 values.");
+    }
 
-    trunk_two_stage_planner::TwoStagePlannerManager manager(node);
-    if (!manager.initialize(algorithm_config, system_config)) {
-      RCLCPP_ERROR(node->get_logger(), "Failed to initialize TwoStagePlannerManager.");
-      executor.cancel();
-      spinner.join();
+    geometry_msgs::msg::Pose target_pose;
+    target_pose.position.x = config.target_position[0];
+    target_pose.position.y = config.target_position[1];
+    target_pose.position.z = config.target_position[2];
+    target_pose.orientation.x = config.target_orientation[0];
+    target_pose.orientation.y = config.target_orientation[1];
+    target_pose.orientation.z = config.target_orientation[2];
+    target_pose.orientation.w = config.target_orientation[3];
+
+    // 姿态输入要求是四元数；这里自动归一化，减少上层输入误差带来的问题。
+    Eigen::Quaterniond q(
+      target_pose.orientation.w,
+      target_pose.orientation.x,
+      target_pose.orientation.y,
+      target_pose.orientation.z);
+    if (!std::isfinite(q.norm()) || q.norm() < 1e-8) {
+      throw std::runtime_error("target_orientation is invalid: quaternion norm is too small.");
+    }
+    q.normalize();
+    target_pose.orientation.x = q.x();
+    target_pose.orientation.y = q.y();
+    target_pose.orientation.z = q.z();
+    target_pose.orientation.w = q.w();
+
+    trunk_two_stage_planner::RobotKinematicsHelper helper;
+    if (!helper.initialize(node, config)) {
+      RCLCPP_ERROR(node->get_logger(), "Failed to initialize RobotKinematicsHelper.");
       rclcpp::shutdown();
       return 1;
     }
 
-    trunk_two_stage_planner::RobotKinematicsHelper pose_helper;
-    if (!pose_helper.initialize(node, algorithm_config)) {
-      RCLCPP_ERROR(node->get_logger(), "Failed to initialize target-pose helper.");
-      executor.cancel();
-      spinner.join();
+    // 先收集所有找到的 IK 候选，用于完整输出。
+    const auto candidates = trunk_two_stage_planner::collectIkCandidates(helper, config, target_pose);
+
+    // 关闭 fallback，确保工具输出的是实际 IK 结果，而不是兜底目标。
+    config.allow_goal_fallback = false;
+    trunk_two_stage_planner::TwoStagePlanner planner(helper, config);
+
+    std::vector<double> q_goal;
+    bool used_fallback_goal = false;
+    if (!planner.solveFinalIK(config.q_start, target_pose, q_goal, used_fallback_goal)) {
+      std::fprintf(stderr, "ik_joint_from_pose: no valid IK solution found.\n");
       rclcpp::shutdown();
-      return 1;
+      return 2;
     }
 
-    const auto target_pose = trunk_two_stage_planner::buildTargetPose(
-      algorithm_config, pose_helper);
-
-    if (!manager.planTwoStageToTarget(target_pose)) {
-      RCLCPP_ERROR(node->get_logger(), "Two-stage planning system failed.");
-      executor.cancel();
-      spinner.join();
-      rclcpp::shutdown();
-      return 1;
+    // 结果输出成可直接复制回参数文件的形式。
+    std::printf("target_position: %s\n",
+      trunk_two_stage_planner::toYamlArray(config.target_position).c_str());
+    std::printf(
+      "target_orientation: %s\n",
+      trunk_two_stage_planner::toYamlArray(
+        {target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z, target_pose.orientation.w})
+        .c_str());
+    std::printf("ik_candidate_count: %zu\n", candidates.size());
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+      std::printf(
+        "ik_candidate_%zu: %s\n",
+        i,
+        trunk_two_stage_planner::toYamlArray(candidates[i]).c_str());
+      std::printf(
+        "ik_candidate_%zu_cost: %.6f\n",
+        i,
+        trunk_two_stage_planner::ikCandidateCost(helper, config, candidates[i], config.q_start));
     }
+    std::printf("goal_joint_target: %s\n",
+      trunk_two_stage_planner::toYamlArray(q_goal).c_str());
+    std::printf("used_fallback_goal: %s\n", used_fallback_goal ? "true" : "false");
 
-    RCLCPP_INFO(
-      node->get_logger(),
-      "Two-stage planner system is running. Keep RViz open to inspect trajectories and markers.");
-
-    while (rclcpp::ok()) {
-      // 保持节点存活，便于规划完成后继续在 RViz 观察轨迹与标记。
-      std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    }
-
-    executor.cancel();
-    spinner.join();
     rclcpp::shutdown();
     return 0;
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "two_stage_planner_system: %s\n", e.what());
+    std::fprintf(stderr, "ik_joint_from_pose: %s\n", e.what());
     rclcpp::shutdown();
-    return 2;
+    return 3;
   }
 }

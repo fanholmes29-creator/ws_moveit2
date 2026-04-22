@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <chrono>
 #include <filesystem>
+#include <cctype>
 #include <stdexcept>
 #include <thread>
 
@@ -43,6 +45,27 @@ geometry_msgs::msg::Pose eigenToPose(const Eigen::Isometry3d& tf)
   pose.orientation.y = q.y();
   pose.orientation.z = q.z();
   pose.orientation.w = q.w();
+  return pose;
+}
+
+geometry_msgs::msg::Pose interpolatePose(
+  const geometry_msgs::msg::Pose& a,
+  const geometry_msgs::msg::Pose& b,
+  double t)
+{
+  const double clamped_t = std::clamp(t, 0.0, 1.0);
+  geometry_msgs::msg::Pose pose;
+  pose.position.x = a.position.x + (b.position.x - a.position.x) * clamped_t;
+  pose.position.y = a.position.y + (b.position.y - a.position.y) * clamped_t;
+  pose.position.z = a.position.z + (b.position.z - a.position.z) * clamped_t;
+
+  const Eigen::Quaterniond qa = poseToEigenQuaternion(a).normalized();
+  const Eigen::Quaterniond qb = poseToEigenQuaternion(b).normalized();
+  const Eigen::Quaterniond q_interp = qa.slerp(clamped_t, qb).normalized();
+  pose.orientation.x = q_interp.x();
+  pose.orientation.y = q_interp.y();
+  pose.orientation.z = q_interp.z();
+  pose.orientation.w = q_interp.w();
   return pose;
 }
 
@@ -149,6 +172,10 @@ bool TwoStagePlannerManager::initialize(
     system_config_.display_trajectory_topic, qos);
   marker_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
     system_config_.marker_topic, qos);
+  joint_state_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
+    system_config_.joint_states_topic,
+    rclcpp::SensorDataQoS(),
+    std::bind(&TwoStagePlannerManager::jointStateCallback, this, std::placeholders::_1));
   return true;
 }
 
@@ -158,7 +185,33 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
   // 1) 算法层求解 q_pre 与 stage2 目标
   // 2) MoveIt 先规划 stage1，再规划 stage2
   // 3) 发布/导出 RViz 与调试输出
-  const std::vector<double> q_start = algorithm_config_.q_start;
+  std::vector<double> q_start;
+  if (system_config_.use_live_joint_state_as_start) {
+    const auto wait_deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(std::max(0.0, system_config_.live_start_state_wait_sec));
+    while (!getCurrentJointState(q_start) && std::chrono::steady_clock::now() < wait_deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    if (!getCurrentJointState(q_start)) {
+      if (!system_config_.allow_start_state_fallback_to_config) {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "Failed to acquire live joint state from %s within %.2f s.",
+          system_config_.joint_states_topic.c_str(),
+          system_config_.live_start_state_wait_sec);
+        return false;
+      }
+      q_start = algorithm_config_.q_start;
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Live joint state unavailable on %s; falling back to configured q_start.",
+        system_config_.joint_states_topic.c_str());
+    }
+  } else {
+    q_start = algorithm_config_.q_start;
+  }
 
   PlanningSummary summary;
   if (!algorithm_->plan(q_start, target_pose, summary)) {
@@ -287,6 +340,9 @@ bool TwoStagePlannerManager::planStage1(
   stage1_group.setMaxVelocityScalingFactor(system_config_.velocity_scaling);
   stage1_group.setMaxAccelerationScalingFactor(system_config_.acceleration_scaling);
   stage1_group.setPoseReferenceFrame(system_config_.planning_frame);
+  stage1_group.setEndEffectorLink(system_config_.stage1_reference_link);
+  stage1_group.setPlannerId("RRTConnectkConfigDefault");   // 默认
+// 或根据参数改成 "RRTstarkConfigDefault" / "PRMkConfigDefault"
 
   moveit::core::RobotState start_state = buildRobotState(q_start);
   stage1_group.setStartState(start_state);
@@ -309,12 +365,57 @@ bool TwoStagePlannerManager::planStage1(
   oc.weight = 1.0;
   constraints.orientation_constraints.push_back(oc);
 
-  stage1_group.setJointValueTarget(q_pre);
-  stage1_group.setPathConstraints(constraints);
-  // 优先尝试带约束规划，以保持 stage1 姿态设计意图。
-  bool ok =
-    (stage1_group.plan(stage1_plan) == moveit::core::MoveItErrorCode::SUCCESS);
-  stage1_group.clearPathConstraints();
+  if (system_config_.stage1_lock_q4) {
+    std::size_t q4_index = 0;
+    if (!kinematics_.getJointIndex(algorithm_config_.joint4_name, q4_index) ||
+        q4_index >= q_start.size()) {
+      throw std::runtime_error("Failed to resolve joint4 index for stage1 q4 lock.");
+    }
+    moveit_msgs::msg::JointConstraint jc4;
+    jc4.joint_name = algorithm_config_.joint4_name;
+    jc4.position = q_start[q4_index];
+    jc4.tolerance_above = system_config_.stage1_q4_tolerance;
+    jc4.tolerance_below = system_config_.stage1_q4_tolerance;
+    jc4.weight = 1.0;
+    constraints.joint_constraints.push_back(jc4);
+  }
+
+  bool ok = false;
+  if (system_config_.stage1_use_cartesian) {
+    const auto waypoints = buildStage1CartesianWaypoints(q_start, q_pre);
+    if (waypoints.size() >= 2) {
+      stage1_group.setPathConstraints(constraints);
+      moveit_msgs::msg::RobotTrajectory cart_traj;
+      const double fraction = stage1_group.computeCartesianPath(
+        waypoints,
+        system_config_.stage1_eef_step,
+        system_config_.stage1_jump_threshold,
+        cart_traj,
+        true);
+      stage1_group.clearPathConstraints();
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "Stage1 Cartesian fraction=%.3f mode=%s reference_link=%s",
+        fraction,
+        system_config_.stage1_cartesian_mode.c_str(),
+        system_config_.stage1_reference_link.c_str());
+      if (fraction >= system_config_.stage1_min_fraction && !cart_traj.joint_trajectory.points.empty()) {
+        ok = timeParameterizeTrajectory(q_start, system_config_.stage1_group_name, cart_traj);
+        if (ok) {
+          stage1_plan.trajectory_ = cart_traj;
+        }
+      }
+    }
+  }
+
+  if (!ok) {
+    stage1_group.setJointValueTarget(q_pre);
+    stage1_group.setPathConstraints(constraints);
+    // 优先尝试带约束规划，以保持 stage1 姿态设计意图。
+    ok = (stage1_group.plan(stage1_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+    stage1_group.clearPathConstraints();
+  }
+
   if (!ok) {
     // 回退策略：
     // 若 upright 约束导致规划过度受限，则允许无约束搜索，
@@ -361,6 +462,8 @@ bool TwoStagePlannerManager::planStage2(
   stage2_group.setMaxVelocityScalingFactor(system_config_.velocity_scaling);
   stage2_group.setMaxAccelerationScalingFactor(system_config_.acceleration_scaling);
   stage2_group.setPoseReferenceFrame(system_config_.planning_frame);
+  stage2_group.setPlannerId("RRTConnectkConfigDefault");   // 默认
+// 或根据参数改成 "RRTstarkConfigDefault" / "PRMkConfigDefault"
 
   moveit::core::RobotState start_state = buildRobotState(q_stage1_end);
   stage2_group.setStartState(start_state);
@@ -471,6 +574,122 @@ void TwoStagePlannerManager::publishDebugMarkers(
   array.markers.push_back(makeLineStripMarker(frame, 11, stage2_points, 0.1f, 0.1f, 0.9f, "stage_paths"));
 
   marker_pub_->publish(array);
+}
+
+std::vector<geometry_msgs::msg::Pose> TwoStagePlannerManager::buildStage1CartesianWaypoints(
+  const std::vector<double>& q_start,
+  const std::vector<double>& q_pre) const
+{
+  std::vector<geometry_msgs::msg::Pose> waypoints;
+  const geometry_msgs::msg::Pose start_pose = eigenToPose(
+    kinematics_.getLinkTransform(q_start, system_config_.stage1_reference_link));
+  const geometry_msgs::msg::Pose goal_pose = eigenToPose(
+    kinematics_.getLinkTransform(q_pre, system_config_.stage1_reference_link));
+
+  const int samples = std::max(system_config_.stage1_waypoint_count, 2);
+  std::string mode = system_config_.stage1_cartesian_mode;
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+
+  waypoints.reserve(static_cast<std::size_t>(samples));
+  if (mode == "arc") {
+    const Eigen::Vector3d p0(start_pose.position.x, start_pose.position.y, start_pose.position.z);
+    const Eigen::Vector3d p1(goal_pose.position.x, goal_pose.position.y, goal_pose.position.z);
+    const Eigen::Vector3d chord = p1 - p0;
+    Eigen::Vector3d lateral = chord.cross(Eigen::Vector3d::UnitZ());
+    if (lateral.norm() < 1e-9) {
+      lateral = chord.cross(Eigen::Vector3d::UnitY());
+    }
+    if (lateral.norm() < 1e-9) {
+      lateral = Eigen::Vector3d::UnitX();
+    }
+    lateral.normalize();
+    const Eigen::Vector3d control = 0.5 * (p0 + p1) + system_config_.stage1_arc_height * lateral;
+
+    for (int i = 0; i < samples; ++i) {
+      const double t = (samples <= 1) ? 0.0 : static_cast<double>(i) / (samples - 1);
+      const Eigen::Vector3d point =
+        (1.0 - t) * (1.0 - t) * p0 + 2.0 * (1.0 - t) * t * control + t * t * p1;
+      geometry_msgs::msg::Pose pose = interpolatePose(start_pose, goal_pose, t);
+      pose.position.x = point.x();
+      pose.position.y = point.y();
+      pose.position.z = point.z();
+      waypoints.push_back(pose);
+    }
+    return waypoints;
+  }
+
+  for (int i = 0; i < samples; ++i) {
+    const double t = (samples <= 1) ? 0.0 : static_cast<double>(i) / (samples - 1);
+    waypoints.push_back(interpolatePose(start_pose, goal_pose, t));
+  }
+  return waypoints;
+}
+
+bool TwoStagePlannerManager::timeParameterizeTrajectory(
+  const std::vector<double>& q_start,
+  const std::string& group_name,
+  moveit_msgs::msg::RobotTrajectory& trajectory) const
+{
+  if (trajectory.joint_trajectory.points.empty()) {
+    return false;
+  }
+
+  moveit::core::RobotState start_state = buildRobotState(q_start);
+  robot_trajectory::RobotTrajectory robot_traj(kinematics_.getRobotModel(), group_name);
+  robot_traj.setRobotTrajectoryMsg(start_state, trajectory);
+
+  trajectory_processing::TimeOptimalTrajectoryGeneration totg;
+  const bool ok = totg.computeTimeStamps(
+    robot_traj, system_config_.velocity_scaling, system_config_.acceleration_scaling);
+  if (!ok) {
+    return false;
+  }
+
+  robot_traj.getRobotTrajectoryMsg(trajectory);
+  return true;
+}
+
+void TwoStagePlannerManager::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
+{
+  if (msg->name.size() != msg->position.size()) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Received joint_states with mismatched name/position sizes: %zu vs %zu",
+      msg->name.size(),
+      msg->position.size());
+    return;
+  }
+
+  const auto& joint_names = kinematics_.getJointNames();
+  std::vector<double> q_current(joint_names.size(), 0.0);
+  for (std::size_t i = 0; i < joint_names.size(); ++i) {
+    const auto it = std::find(msg->name.begin(), msg->name.end(), joint_names[i]);
+    if (it == msg->name.end()) {
+      return;
+    }
+    const std::size_t index = static_cast<std::size_t>(std::distance(msg->name.begin(), it));
+    const double value = msg->position[index];
+    if (!std::isfinite(value)) {
+      return;
+    }
+    q_current[i] = value;
+  }
+
+  std::lock_guard<std::mutex> lock(joint_state_mutex_);
+  latest_joint_state_ = q_current;
+  has_latest_joint_state_ = true;
+}
+
+bool TwoStagePlannerManager::getCurrentJointState(std::vector<double>& q_current) const
+{
+  std::lock_guard<std::mutex> lock(joint_state_mutex_);
+  if (!has_latest_joint_state_ || latest_joint_state_.size() != kinematics_.getJointNames().size()) {
+    return false;
+  }
+  q_current = latest_joint_state_;
+  return true;
 }
 
 }  // namespace trunk_two_stage_planner

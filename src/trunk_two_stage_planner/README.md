@@ -51,6 +51,10 @@
   - CSV / summary / geometry_points 导出实现
 - `src/fk_pose_from_joint_main.cpp`
   - 关节空间目标转目标位姿（FK）的小工具入口，直接输出可粘贴的 `target_position/target_orientation`
+- `src/ik_joint_from_pose_main.cpp`
+  - 目标位姿转关节空间目标（IK）的小工具入口，直接输出可粘贴的 `goal_joint_target`
+- `src/two_stage_planner_service_main.cpp`
+  - 对上层开放的 Service 入口，接收外部目标位姿或回退到本地默认目标
 
 ## 两阶段算法流程
 
@@ -77,6 +81,94 @@
 7. 第一阶段规划到 `q_pre`
 8. 第二阶段从第一阶段终点继续，恢复到最终目标位姿
 
+### 代价函数与排序规则
+
+当前实现里的代价函数分为三层：**stage1 完整加权代价**、**stage2 位姿恢复误差**、**stage2 词典序选择规则**。
+
+#### 1. Stage1 完整加权代价
+
+当不存在满足恢复性阈值的候选时，使用：
+
+\[
+J_{\text{stage1}}
+=
+w_1 \cdot e_{\text{proj}}^2
++ w_2 \cdot e_{\text{stage2-pos}}^2
++ w_3 \cdot e_{\text{start}}
++ w_4 \cdot e_{\text{limit}}
+\]
+
+其中：
+
+- `w1`：投影几何引导权重
+- `w2`：第二阶段位置可恢复性权重
+- `w3`：离起点偏移权重
+- `w4`：关节限位/安全裕度权重
+
+#### 2. Stage2 恢复性综合误差
+
+用于判断某个 `q_pre` 是否进入“恢复性可行候选子集”：
+
+\[
+e_{\text{stage2-pose}}
+=
+stage2\_pose\_wp \cdot e_{\text{pos}}^2
++ stage2\_pose\_wR \cdot e_{\text{rot}}^2
+\]
+
+其中：
+
+- `stage2_pose_wp`：位置恢复误差权重
+- `stage2_pose_wR`：姿态恢复误差权重
+- `stage2_pose_epsilon`：进入可行子集的阈值
+
+一旦候选满足 `e_stage2-pose < stage2_pose_epsilon`，stage1 排序会切换为“过滤代价”：
+
+\[
+J_{\text{filtered}}
+=
+w_1 \cdot e_{\text{proj}}^2
++ w_3 \cdot e_{\text{start}}
++ w_4 \cdot e_{\text{limit}}
+\]
+
+也就是**不再继续用 `w2` 比较已过关的候选**。
+
+#### 3. Stage2 最终目标的词典序规则
+
+第二阶段最终不是简单按一个加权和拍板，而是按以下优先级依次比较：
+
+1. 综合位姿误差 `pose_err`
+2. 位置误差 `pos_err`
+3. 姿态误差 `ori_err`
+4. `q3/q4` 相对 `q_goal_ik` 的偏移 `q34_bias`
+
+因此，stage2 的核心原则是：
+
+- 先保证最终位姿恢复
+- 再比较位置/姿态细节
+- 最后才考虑是否更接近某个关节参考解
+
+#### 4. IK 多解的工程排序规则
+
+若同一目标位姿存在多个 IK 候选，当前按下式选择一个工程最优解：
+
+\[
+J_{\text{ik}}
+=
+\|q - q_{\text{start}}\|^2
++ ik\_limit\_penalty\_weight \cdot e_{\text{limit}}
+\]
+
+即：
+
+- 优先选择离当前起点更近的分支
+- 同时偏好更远离关节限位的解
+
+详细解释、变量定义和设计意图请直接查看：
+
+- `src/two_stage_planner.cpp` 中相关函数注释
+
 ### 投影点的角色
 
 投影点现在只是第一阶段预备态终点的**几何引导量之一**，不再是唯一目标。当前算法已经验证出：
@@ -101,6 +193,7 @@
 ### 已实现
 
 - 目标位姿 `T_d` 到最终 IK 解 `q_goal` 的求解
+- 基于 `/joint_states` 的实时起点读取（可选回退到配置 `q_start`）
 - 第一阶段候选预备态 `q_pre` 搜索
 - 第二阶段完整位姿恢复性验证
 - `stage1_group / stage2_group` 两阶段 MoveIt 规划调度
@@ -113,6 +206,7 @@
 
 - `stage1_group` / `stage2_group` 不是物理上拆开的链，只是工程入口分组
 - `q3 = q1 + q2` 没有在 MoveIt 中实现为原生硬约束，而是由算法层用于候选构造
+- 当前起点虽然已经可优先来自实时 `/joint_states`，但仍默认以关节状态作为上层规划起点，而不是单独基于“当前末端位姿”直接起算
 - 第一阶段还不是完整的一阶段连续笛卡尔过程约束优化器
 - 第一阶段当前采用的是工程近似：
   - 先由算法层求 `q_pre`
@@ -131,6 +225,7 @@
 - 已经完成完整的一阶段连续笛卡尔过程约束规划
 - 已经原生支持 `q3 = q1 + q2` 硬约束
 - 已经原生实现“仅由 q3、q4 完成恢复”的 MoveIt 模型层约束
+- 已经完成真实硬件闭环执行链路（当前仍以 MoveIt 规划、显示、导出和 FakeSystem 联调为主）
 
 它目前是一个：
 
@@ -157,6 +252,13 @@
       说明：离线分析工具入口，对应 `two_stage_planner_analysis_tool`
     - `fk_pose_from_joint_main.cpp`
       说明：FK 打印工具入口，对应 `fk_pose_from_joint`
+    - `ik_joint_from_pose_main.cpp`
+      说明：IK 反解工具入口，对应 `ik_joint_from_pose`
+    - `two_stage_planner_service_main.cpp`
+      说明：Service 入口，对应 `two_stage_planner_service`
+  - `srv/`
+    - `PlanToPose.srv`
+      说明：上层位姿请求接口定义
   - `config/`
     - `two_stage_system_params.yaml`
     - `two_stage_system.rviz`
@@ -164,6 +266,10 @@
       - `two_stage_planner_analysis_tool.yaml`
   - `launch/`
     - `two_stage_planner_system.launch.py`
+    - `two_stage_planner_service.launch.py`
+  - `scripts/`
+    - `example_plan_to_pose_client`
+      说明：模拟上层调用 `/two_stage_planner/plan_to_pose` 的示例客户端
   - `README.md`
 
 支撑包：
@@ -207,6 +313,13 @@ source install/setup.bash
 ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py
 ```
 
+说明：
+
+- 系统启动后，会优先从 `/joint_states` 读取当前 trunk 关节状态作为规划起点。
+- 如果在 `live_start_state_wait_sec` 时间内未收到有效状态，可按配置决定：
+  - 回退到 `q_start`
+  - 或直接报错退出
+
 ### 无界面调试
 
 ```bash
@@ -214,6 +327,26 @@ mkdir -p ~/ws_moveit2/log/ros
 export ROS_LOG_DIR=~/ws_moveit2/log/ros
 ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py system_use_rviz:=false manager_delay_sec:=2.0
 ```
+
+### Service 模式启动（供上层系统调用）
+
+```bash
+cd ~/ws_moveit2
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py
+```
+
+如果你不需要 RViz，也可以：
+
+```bash
+ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py service_use_rviz:=false service_delay_sec:=2.0
+```
+
+说明：
+
+- service 模式与普通系统模式一样，会优先使用实时 `/joint_states` 作为起点。
+- 上层只负责提供目标位姿；当前起点不建议由上层通过位姿反推，而是由系统内部直接读取当前关节状态。
 
 ### 离线分析工具（保留但降级）
 
@@ -255,6 +388,140 @@ source_goal_joint_target: [-1.000000, 1.500000, 0.700000, 0.600000]
   - `target_position`
   - `target_orientation`
   并设置 `use_goal_state_as_target_pose: false`。
+
+### IK 反解工具（输入目标位姿，输出可粘贴关节值）
+
+用途：
+
+- 输入目标位姿：
+  - `target_position`
+  - `target_orientation`
+- 直接打印可粘贴到 `two_stage_system_params.yaml` 的：
+  - `goal_joint_target: [...]`
+- 同时打印当前搜索到的全部 IK 候选解，便于判断是否存在多解以及最终为何选中某一组解
+
+示例命令（使用当前参数文件中的位姿）：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run trunk_two_stage_planner ik_joint_from_pose \
+  --ros-args \
+  --params-file ~/ws_moveit2/src/trunk_two_stage_planner/config/two_stage_system_params.yaml
+```
+
+前提是参数文件里已经给出：
+
+```yaml
+target_position: [0.196101, 0.000000, 0.602433]
+target_orientation: [-0.014919, -0.098712, 0.148692, 0.983831]
+```
+
+示例输出（格式示意）：
+
+```text
+target_position: [0.196101, 0.000000, 0.602433]
+target_orientation: [-0.014919, -0.098712, 0.148692, 0.983831]
+ik_candidate_count: 6
+ik_candidate_0: [0.092349, -1.400004, -1.507655, 0.300001]
+ik_candidate_0_cost: 4.502093
+ik_candidate_1: [-1.100002, 1.400002, 0.100002, 0.300001]
+ik_candidate_1_cost: 3.312076
+ik_candidate_2: [0.092348, -1.400002, -1.507653, 0.300001]
+ik_candidate_2_cost: 4.502077
+...
+goal_joint_target: [-1.100002, 1.400002, 0.100002, 0.300001]
+used_fallback_goal: false
+```
+
+注意：
+
+- `target_position` 必须正好 3 维。
+- `target_orientation` 必须正好 4 维，顺序为四元数 `[qx, qy, qz, qw]`。
+- 工具会自动检查四元数范数并归一化。
+- 该工具内部关闭了 fallback 伪目标，因此输出的是实际求得的 IK 解。
+- `ik_candidate_*` 表示本次通过多 seed 搜索收集到的所有 IK 候选。
+- `ik_candidate_*_cost` 是候选排序代价，主要反映：
+  - 距离 `q_start` 的偏移大小
+  - 是否更接近关节限位
+- `goal_joint_target` 是在所有候选中按代价选出的最终推荐解，并不是“唯一数学解”。
+
+### Service 直接调用（外部位姿优先，本地默认兜底）
+
+Service 名称：
+
+- `/two_stage_planner/plan_to_pose`
+
+接口类型：
+
+- `trunk_two_stage_planner/srv/PlanToPose`
+
+#### 1. 使用本地默认目标
+
+```bash
+ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/PlanToPose \
+"{use_external_target: false}"
+```
+
+含义：
+
+- 忽略请求中的外部位姿
+- 回退到本地参数配置的目标逻辑：
+  - 若 `use_goal_state_as_target_pose: true`，则使用 `goal_joint_target` 做 FK
+  - 否则使用 `target_position/target_orientation`
+- 但规划起点仍优先来自实时 `/joint_states`，而不是固定 YAML 起点
+
+#### 2. 使用外部位姿
+
+```bash
+ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/PlanToPose \
+"{use_external_target: true, target_position: [0.196101, 0.0, 0.602433], target_orientation: [-0.014919, -0.098712, 0.148692, 0.983831]}"
+```
+
+说明：
+
+- `target_position` 必须是 3 维
+- `target_orientation` 必须是 4 维四元数 `[qx, qy, qz, qw]`
+- 服务端会检查数值合法性，并自动归一化四元数
+- 规划起点由系统内部读取当前关节状态，不需要上层额外提供
+
+#### 3. 返回内容
+
+服务响应会返回：
+
+- `success`
+- `message`
+- `used_target_pose`
+- `used_external_target`
+
+这可以帮助你确认本次规划到底用了外部位姿还是本地默认位姿。
+
+### 上层模拟客户端（example）
+
+为了方便联调，包里提供了一个最小示例脚本：
+
+- `example_plan_to_pose_client`
+
+#### 用默认目标调用
+
+```bash
+ros2 run trunk_two_stage_planner example_plan_to_pose_client --use-default
+```
+
+#### 用外部位姿调用
+
+```bash
+ros2 run trunk_two_stage_planner example_plan_to_pose_client \
+  --position 0.196101 0.0 0.602433 \
+  --orientation -0.014919 -0.098712 0.148692 0.983831
+```
+
+脚本输出会打印：
+
+- `success`
+- `message`
+- `used_external_target`
+- 实际使用的目标位姿
 
 ## RViz 中看什么
 
@@ -304,6 +571,10 @@ source_goal_joint_target: [-1.000000, 1.500000, 0.700000, 0.600000]
 
 - 系统版：`/home/wxl/ws_moveit2/csv/two_stage_system`
 - 分析工具版：由 analysis tool 参数决定
+
+说明：
+
+- 若启用了实时起点，`summary.txt` 中的 `q_start` 表示本次规划实际读取到的当前关节状态，而不一定等于参数文件中的默认 `q_start`。
 
 ## 当前限制与下一步增强方向
 

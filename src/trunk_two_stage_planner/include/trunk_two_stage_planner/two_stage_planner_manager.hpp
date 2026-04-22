@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -8,6 +9,7 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/display_trajectory.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "trunk_two_stage_planner/robot_kinematics_helper.hpp"
@@ -42,8 +44,18 @@ struct TwoStageSystemConfig
   double stage1_jump_threshold = 0.0;
   double stage1_min_fraction = 0.95;
   int stage1_waypoint_count = 20;
+  bool stage1_use_cartesian = true;
+  std::string stage1_cartesian_mode = "line";
+  std::string stage1_reference_link = "trunk_link3";
+  bool stage1_lock_q4 = true;
+  double stage1_q4_tolerance = 0.05;
+  double stage1_arc_height = 0.05;
 
   double stage2_q12_tolerance = 0.03;
+  bool use_live_joint_state_as_start = true;
+  bool allow_start_state_fallback_to_config = true;
+  double live_start_state_wait_sec = 2.0;
+  std::string joint_states_topic = "/joint_states";
 
   bool export_csv = true;
   std::string output_dir = "/home/wxl/ws_moveit2/csv/two_stage_system";
@@ -106,6 +118,15 @@ private:
     const PlanningSummary& summary,
     const moveit_msgs::msg::RobotTrajectory& stage1_traj,
     const moveit_msgs::msg::RobotTrajectory& stage2_traj) const;
+  std::vector<geometry_msgs::msg::Pose> buildStage1CartesianWaypoints(
+    const std::vector<double>& q_start,
+    const std::vector<double>& q_pre) const;
+  bool timeParameterizeTrajectory(
+    const std::vector<double>& q_start,
+    const std::string& group_name,
+    moveit_msgs::msg::RobotTrajectory& trajectory) const;
+  void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+  bool getCurrentJointState(std::vector<double>& q_current) const;
 
   rclcpp::Node::SharedPtr node_;
   PlannerConfig algorithm_config_;
@@ -118,6 +139,10 @@ private:
 
   rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  mutable std::mutex joint_state_mutex_;
+  std::vector<double> latest_joint_state_;
+  bool has_latest_joint_state_ = false;
 };
 
 }  // namespace trunk_two_stage_planner

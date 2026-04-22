@@ -1,0 +1,4 @@
+[INFO] [1776822462.171759704] [moveit_robot_model.robot_model]: Loading robot model 'trunk_robot'...
+[WARN] [1776822462.336458625] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[WARN] [1776822462.336706850] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[WARN] [1776822462.336722618] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.

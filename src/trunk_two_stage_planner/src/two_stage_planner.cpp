@@ -236,6 +236,16 @@ Eigen::Vector3d TwoStagePlanner::getStage1ReferencePoint(const std::vector<doubl
 
 double TwoStagePlanner::jointLimitPenalty(const std::vector<double>& q) const
 {
+  // 这是一个“软限位代价”，不是简单的越界判定：
+  // 1) 若直接越界，返回 inf，表示该状态彻底不可用
+  // 2) 若未越界但离上下限太近，则按距离限位的相对比例施加连续惩罚
+  //
+  // 设计目的：
+  // - 给优化过程一个“提前远离限位”的趋势，而不是等到碰到限位才突然失败
+  // - 让最终选中的解在工程上更保守、更可执行
+  //
+  // `joint_limit_margin_ratio` 可以理解为“安全缓冲区”宽度占关节总行程的比例。
+  // 例如 0.1 表示：若某关节进入距边界 10% 行程的区域，就开始被惩罚。
   constexpr double inf = std::numeric_limits<double>::infinity();
 
   double penalty = 0.0;
@@ -254,7 +264,15 @@ double TwoStagePlanner::jointLimitPenalty(const std::vector<double>& q) const
     const double margin = std::min(q[i] - lower, upper - q[i]);
     const double margin_ratio = margin / range;
     if (margin_ratio < config_.joint_limit_margin_ratio) {
-      // 对接近限位的状态施加软抑制。
+      // 这里把“离安全缓冲区边界还差多少”归一化到 [0, 1]：
+      // - 贴近限位时 normalized 接近 1，惩罚最大
+      // - 刚好到达安全缓冲区边界时 normalized = 0，惩罚消失
+      //
+      // 使用平方而不是线性项，是为了：
+      // - 在轻微接近限位时惩罚更温和
+      // - 在非常接近限位时惩罚迅速增大
+      // 这种形状更符合“工程上可接受一定接近，但不希望贴边运行”的需求。
+      //
       // 增大 `joint_limit_margin_ratio` 会扩大保守安全缓冲区。
       const double normalized =
         (config_.joint_limit_margin_ratio - margin_ratio) / config_.joint_limit_margin_ratio;
@@ -276,7 +294,17 @@ double TwoStagePlanner::stage1Cost(
   Eigen::Vector3d* o4_out,
   Eigen::Vector3d* o4_proj_out) const
 {
-  // 当不存在阈值可行候选时，使用该回退排序目标。
+  // 这是 stage1 的“完整加权代价”，但只在“没有阈值可行候选”时才作为回退排序使用。
+  //
+  // 它不是单纯几何最优，而是把四类工程诉求揉成一个标量：
+  // 1) projection_error   : 第一阶段几何引导是否贴近期望投影
+  // 2) stage2_pos_error   : 固定 q1/q2 后，第二阶段至少在位置上是否还恢复得回来
+  // 3) term_start_bias    : 是否离起始姿态太远（平滑性/舒适性）
+  // 4) limit_penalty      : 是否过分逼近关节限位（安全性）
+  //
+  // 这里采用“加权和 + 误差平方”的形式，是典型的工程折中做法：
+  // - 把不同来源的误差压缩到一个便于比较的标量
+  // - 平方项会放大较大的误差，促使优化优先消除明显不好的候选
   const std::vector<double> q_stage1 = composeStage1State(q1, q2, q_start[idx_q4_]);
   const double limit_penalty = jointLimitPenalty(q_stage1);
   if (!std::isfinite(limit_penalty) || !kinematics_.isStateWithinBounds(q_stage1)) {
@@ -303,11 +331,17 @@ double TwoStagePlanner::stage1Cost(
   }
 
   const double term_start_bias = squaredDistance2D(q1, q2, q_start[idx_q1_], q_start[idx_q2_]);
-  // 注意：
-  // - `w1`：投影对齐压力
-  // - `w2`：stage2 粗可恢复性压力
-  // - `w3`：起始姿态附近的舒适/连续性约束
-  // - `w4`：关节限位安全裕度约束
+  // 各项权重的含义：
+  // - `w1`：投影对齐压力。越大，stage1 越强调几何引导效果。
+  // - `w2`：第二阶段粗可恢复性压力。越大，越不愿选“后续很难恢复”的 q_pre。
+  // - `w3`：起始姿态偏移惩罚。越大，越偏好离 q_start 更近、更平滑的预备态。
+  // - `w4`：限位安全代价。越大，越偏好远离关节边界的姿态。
+  //
+  // 为什么 projection_error 和 stage2_pos_error 要平方：
+  // - 这样大误差会被显著放大，避免出现“某项特别差但仍被其它小项抵消”的情况。
+  //
+  // 为什么 term_start_bias 本身不再额外平方：
+  // - 因为 squaredDistance2D 已经是平方距离了。
   return config_.w1 * projection_error * projection_error +
          config_.w2 * stage2_pos_error * stage2_pos_error +
          config_.w3 * term_start_bias +
@@ -323,6 +357,14 @@ bool TwoStagePlanner::searchStage1PreparatoryState(
 {
   // 在 (q1, q2) 上执行 stage1 网格搜索，q3/q4 由 trunk 规则确定。
   // 选择策略为“阈值优先，其次加权回退”。
+  //
+  // 这里的核心思想不是“全局只看一个加权和”，而是分两层：
+  // - 第一层：先看 stage2 是否足够可恢复（pose_error 是否小于阈值）
+  // - 第二层：只有在满足这个硬门槛后，才去比较几何/舒适/限位等次级指标
+  //
+  // 这样做的原因：
+  // - 如果不先设门槛，优化很容易选出“stage1 看起来很漂亮，但 stage2 实际接不回目标”的假优解
+  // - 这正是两阶段规划与普通单阶段几何启发式规划最大的区别
   const auto [q1_lower, q1_upper] = kinematics_.getJointPositionBounds(config_.joint1_name);
   const auto [q2_lower, q2_upper] = kinematics_.getJointPositionBounds(config_.joint2_name);
   const double q4_fix = q_start[idx_q4_];
@@ -397,6 +439,10 @@ bool TwoStagePlanner::searchStage1PreparatoryState(
         config_.w1 * projection_error * projection_error +
         config_.w3 * term_start_bias +
         config_.w4 * limit_penalty;
+      // 注意：filtered_cost 有意移除了 `w2 * stage2_pos_error^2`。
+      // 因为一旦候选已经满足 stage2_pose_epsilon，说明它在“可恢复性”这一层已经过关，
+      // 此时继续让 `w2` 参与排序，会把“已经合格”的候选再次按可恢复性粗指标拉开，
+      // 反而可能压过 stage1 几何和姿态平滑性这些更该在第二层比较的内容。
 
       if (stage2_pose_error < config_.stage2_pose_epsilon) {
         // 主分支：
@@ -441,6 +487,13 @@ double TwoStagePlanner::minStage2PositionErrorForFixedQ1Q2(
 {
   // 用于 stage1 排序的粗粒度评估器：
   // 扫描 (q3,q4)，记录到目标点的最小位置误差。
+  //
+  // 这是一个“便宜但不完整”的可恢复性指标：
+  // - 只看位置，不看姿态
+  // - 用于 stage1Cost 的粗排序项
+  //
+  // 它的作用不是替代真正的位姿判断，而是快速告诉我们：
+  // “如果 q1/q2 固定住，后两关节大概还能不能把末端拉回目标附近”
   const auto [q3_lower, q3_upper] = kinematics_.getJointPositionBounds(config_.joint3_name);
   const auto [q4_lower, q4_upper] = kinematics_.getJointPositionBounds(config_.joint4_name);
 
@@ -477,6 +530,13 @@ double TwoStagePlanner::minStage2PoseErrorForFixedQ1Q2(
   double* best_pos_error) const
 {
   // 用于阈值筛选（`stage2_pose_epsilon`）的位姿感知评估器。
+  //
+  // 和上面的 minStage2PositionErrorForFixedQ1Q2 相比，这里更“贵”也更完整：
+  // - 同时考虑位置误差和姿态误差
+  // - 其输出直接参与“是否进入可行候选子集”的判断
+  //
+  // 这相当于在问：
+  // “如果 stage1 选了这个 q1/q2，后续只调 q3/q4，理论上最好的 stage2 位姿还能接近目标到什么程度？”
   const auto [q3_lower, q3_upper] = kinematics_.getJointPositionBounds(config_.joint3_name);
   const auto [q4_lower, q4_upper] = kinematics_.getJointPositionBounds(config_.joint4_name);
 
@@ -511,6 +571,13 @@ double TwoStagePlanner::minStage2PoseErrorForFixedQ1Q2(
       // 调参建议：
       // - 增大 `stage2_pose_wp`：更强调笛卡尔位置闭合
       // - 增大 `stage2_pose_wR`：更强调姿态可恢复性收敛
+      //
+      // 这里本质上也是一个加权和：
+      // pose_error = 位置项 + 姿态项
+      // 其中位置项使用米的平方，姿态项使用旋转误差向量范数平方。
+      //
+      // `stage2_pose_epsilon` 不是“位置阈值”也不是“角度阈值”，
+      // 而是这个综合位姿误差的阈值，所以调它时必须结合 wp/wR 一起理解。
 
       if (pose_error < best_pose_error) {
         best_pose_error = pose_error;
@@ -535,6 +602,18 @@ bool TwoStagePlanner::optimizeStage2LockedQ1Q2(
 {
   // 在 q1/q2 锁定语义下执行最终 stage2 目标搜索。
   // 使用词典序优先级可避免指标间不稳定权衡。
+  //
+  // 和 stage1 不同，这里最终没有直接用一个加权和来“拍板”选最优解，
+  // 而是采用词典序：
+  //   1) 先比较综合位姿误差 pose_err
+  //   2) pose_err 相同或极接近时，再比位置误差
+  //   3) 再比姿态误差
+  //   4) 最后才比 q3/q4 是否接近 q_goal_ik
+  //
+  // 原因：
+  // - stage2 的核心使命是“恢复最终位姿”
+  // - 如果继续单纯做加权和，很容易出现某一项略优却掩盖主目标退化的问题
+  // - 词典序能明确表达“先把主任务做好，再谈次任务”
   const auto [q3_lower, q3_upper] = kinematics_.getJointPositionBounds(config_.joint3_name);
   const auto [q4_lower, q4_upper] = kinematics_.getJointPositionBounds(config_.joint4_name);
 
@@ -629,6 +708,12 @@ double TwoStagePlanner::stage2LockedCost(
   double* orientation_error_deg) const
 {
   // 辅助标量代价（主要用于诊断）；最终选择以上方词典序为准。
+  //
+  // 这个函数仍然保留，是因为它对“观察趋势”和“打印调试信息”很有价值：
+  // - 能快速看出位置/姿态/偏置/限位四类因素叠加后的总趋势
+  // - 但它不再承担最终最优解决策职责
+  //
+  // 这也是为什么 optimizeStage2LockedQ1Q2 会额外单独计算 pose_err / pos_err / ori_err_deg / q34_bias。
   std::vector<double> q = q_pre;
   q[idx_q3_] = q3;
   q[idx_q4_] = q4;
@@ -660,6 +745,19 @@ double TwoStagePlanner::stage2LockedCost(
   const double q34_bias =
     squaredDistance2D(q3, q4, q_goal_ik[idx_q3_], q_goal_ik[idx_q4_]);
 
+  // 各项解释：
+  // - stage2_pos_weight * pos_err^2
+  //     末端位置误差，越小越好
+  // - stage2_ori_weight * ori_err_deg^2
+  //     姿态误差（单位是度），越小越好
+  // - stage2_q34_bias_weight * q34_bias
+  //     希望最终 q3/q4 不要偏离 q_goal_ik 太远，作为次级正则项
+  // - w3 * limit_penalty
+  //     继承限位安全惩罚，避免最终目标贴边
+  //
+  // 注意姿态项这里用的是“角度（度）平方”，而不是旋转向量范数平方，
+  // 所以它和 minStage2PoseErrorForFixedQ1Q2 里的 pose_error 不是同一个量纲体系。
+  // 这也是为什么这里更适合作为诊断/趋势指标，而最终选择改由词典序控制。
   return config_.stage2_pos_weight * pos_err * pos_err +
          config_.stage2_ori_weight * ori_err_deg * ori_err_deg +
          config_.stage2_q34_bias_weight * q34_bias +
@@ -704,8 +802,14 @@ double TwoStagePlanner::ikCandidateCost(
   const std::vector<double>& q,
   const std::vector<double>& q_start) const
 {
-  // IK 排序正则项：
-  // 尽量减少相对起点运动，同时避免贴近限位解。
+  // IK 候选排序代价：
+  // - 第一项 squaredNormDiff(q, q_start)
+  //     偏好离当前起点更近的 IK 分支，减少大幅跳变
+  // - 第二项 ik_limit_penalty_weight * jointLimitPenalty(q)
+  //     偏好更远离限位的 IK 解
+  //
+  // 这不是“数学唯一最优”定义，而是工程偏好：
+  // 在多个 IK 解都成立时，优先选更平滑、更保守、更不贴边的那个。
   return squaredNormDiff(q, q_start) + config_.ik_limit_penalty_weight * jointLimitPenalty(q);
 }
 

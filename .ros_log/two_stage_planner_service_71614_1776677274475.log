@@ -1,0 +1,9 @@
+[INFO] [1776677274.831073548] [moveit_robot_model.robot_model]: Loading robot model 'trunk_robot'...
+[WARN] [1776677275.014073201] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[WARN] [1776677275.014180484] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[WARN] [1776677275.014200225] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[INFO] [1776677275.020863079] [moveit_robot_model.robot_model]: Loading robot model 'trunk_robot'...
+[WARN] [1776677275.188612112] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[WARN] [1776677275.188683759] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[WARN] [1776677275.188701391] [kdl_parser]: The root link chassis_base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[INFO] [1776677275.189505023] [two_stage_planner_system]: Two-stage planner service is ready at /two_stage_planner/plan_to_pose

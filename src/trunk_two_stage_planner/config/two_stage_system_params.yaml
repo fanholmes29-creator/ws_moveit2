@@ -20,15 +20,13 @@ two_stage_planner_system:
     planning_frame: "chassis_base_link"
 
     q_start: [0.0, 0.0, 0.0, 0.0]
-    goal_joint_target: [-1.5, 1.5, 0.7, 0.6]
+    goal_joint_target: [-1.0, 1.5, 0.7, 0.6]
     q_goal_fallback: [-1.0, 1.5, 0.7, 0.6]
     # 目标策略开关：
     # true -> 由 goal_joint_target 的 FK 推导目标位姿
     # false -> 使用下方 target_position + target_orientation
     use_goal_state_as_target_pose: false
 
-    target_position: [0.226100, 0.000000, 0.603935]
-    target_orientation: [0.014770, 0.047747, 0.295151, 0.954143]
     allow_goal_fallback: true
     ik_attempts: 12
     ik_timeout: 0.02
@@ -74,9 +72,19 @@ two_stage_planner_system:
     stage1_jump_threshold: 0.0
     stage1_min_fraction: 0.90
     stage1_waypoint_count: 15
+    stage1_use_cartesian: true
+    stage1_cartesian_mode: "line" # line | arc
+    stage1_reference_link: "trunk_link3"
+    stage1_lock_q4: true
+    stage1_q4_tolerance: 0.05
+    stage1_arc_height: 0.05
     # stage2 组内 q1/q2 锁定容差。
     # 更小 => 分离更严格；更大 => 规划更容易但阶段泄漏风险更高。
     stage2_q12_tolerance: 0.03
+    use_live_joint_state_as_start: true
+    allow_start_state_fallback_to_config: true
+    live_start_state_wait_sec: 2.0
+    joint_states_topic: "/joint_states"
 
     marker_topic: "/two_stage_debug_markers"
     display_trajectory_topic: "/display_planned_path"
