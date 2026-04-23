@@ -5,11 +5,14 @@
 #include <string>
 #include <vector>
 
+#include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/display_trajectory.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "trunk_two_stage_planner/robot_kinematics_helper.hpp"
@@ -34,6 +37,7 @@ struct TwoStageSystemConfig
   std::string planning_frame = "chassis_base_link";
   std::string marker_topic = "/two_stage_debug_markers";
   std::string display_trajectory_topic = "/display_planned_path";
+  std::string joint_trajectory_topic = "/two_stage_joint_trajectory";
 
   double planning_time = 5.0;
   int planning_attempts = 5;
@@ -56,6 +60,10 @@ struct TwoStageSystemConfig
   bool allow_start_state_fallback_to_config = true;
   double live_start_state_wait_sec = 2.0;
   std::string joint_states_topic = "/joint_states";
+  bool execute_joint_trajectory = true;
+  std::string follow_joint_trajectory_action = "/trunk_group_controller/follow_joint_trajectory";
+  double execute_action_server_wait_sec = 5.0;
+  double execute_result_wait_sec = 30.0;
 
   bool export_csv = true;
   std::string output_dir = "/home/wxl/ws_moveit2/csv/two_stage_system";
@@ -125,6 +133,10 @@ private:
     const std::vector<double>& q_start,
     const std::string& group_name,
     moveit_msgs::msg::RobotTrajectory& trajectory) const;
+  trajectory_msgs::msg::JointTrajectory concatenateJointTrajectories(
+    const moveit_msgs::msg::RobotTrajectory& stage1_traj,
+    const moveit_msgs::msg::RobotTrajectory& stage2_traj) const;
+  bool executeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) const;
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
   bool getCurrentJointState(std::vector<double>& q_current) const;
 
@@ -139,6 +151,7 @@ private:
 
   rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr joint_traj_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   mutable std::mutex joint_state_mutex_;
   std::vector<double> latest_joint_state_;

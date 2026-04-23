@@ -54,6 +54,11 @@
   - `allow_start_state_fallback_to_config`：若实时状态暂时不可用，是否回退到配置里的 `q_start`
   - `live_start_state_wait_sec`：等待实时起点到来的最长时间
   - `joint_states_topic`：当前关节状态订阅话题
+  - `joint_trajectory_topic`：完整轨迹输出 topic
+  - `execute_joint_trajectory`：规划成功后是否继续向控制器发送轨迹
+  - `follow_joint_trajectory_action`：控制器 action 名称
+  - `execute_action_server_wait_sec`：等待 action server 可用的最长时间
+  - `execute_result_wait_sec`：等待控制器执行结果的最长时间
 
 - **输出**
   - `output_dir`
@@ -67,6 +72,8 @@
 - 采样数提高会显著增加耗时，先做小步调整。
 - 在线运行时，推荐开启 `use_live_joint_state_as_start: true`，让系统从当前真实关节状态起步。
 - 若启动初期 `/joint_states` 可能有延迟，可保留 `allow_start_state_fallback_to_config: true` 作为兜底。
+- 若你只是想先把轨迹给同事而不立刻执行到底层，可关闭 `execute_joint_trajectory`，只保留标准 `JointTrajectory` 输出。
+- 若你要直接和 `ros2_control` 控制器联调，则应确认 `follow_joint_trajectory_action` 与控制器配置一致。
 
 ---
 
@@ -144,6 +151,25 @@
     - `use_goal_state_as_target_pose: false`
     - 填 `target_position` 和 `target_orientation`
 
+- **我想把完整轨迹发给同事或中间层**
+  - 改 `two_stage_system_params.yaml`：
+    - `joint_trajectory_topic`
+  - 系统会在规划成功后发布：
+    - `trajectory_msgs/msg/JointTrajectory`
+
+- **我想规划后直接执行到底层 ros2_control**
+  - 改 `two_stage_system_params.yaml`：
+    - `execute_joint_trajectory: true`
+    - `follow_joint_trajectory_action: "/trunk_group_controller/follow_joint_trajectory"`
+    - `execute_action_server_wait_sec`
+    - `execute_result_wait_sec`
+  - 这会把完整轨迹作为 `FollowJointTrajectory` goal 发给控制器。
+
+- **我只想输出轨迹，不想让系统自动执行**
+  - 改 `two_stage_system_params.yaml`：
+    - `execute_joint_trajectory: false`
+  - 这时仍会发布完整 `JointTrajectory`，但不会发送 action goal。
+
 - **我希望系统从机器人当前状态开始规划，而不是从固定 `q_start` 开始**
   - 改 `two_stage_system_params.yaml`：
     - `use_live_joint_state_as_start: true`
@@ -199,6 +225,8 @@
 - service 模式下，`two_stage_system_params.yaml` 依然是默认目标与系统参数的来源，不会因为新增 service 而失效。
 - 若启用了 `use_live_joint_state_as_start: true`，则本次规划实际使用的 `q_start` 可能与 YAML 里的默认值不同。
 - 若需要严格复现实验结果，建议关闭实时起点模式，固定使用配置里的 `q_start`。
+- 若启用了 `execute_joint_trajectory: true`，则系统在规划成功后不仅会发布轨迹，还会主动向控制器发送 `FollowJointTrajectory` action goal。
+- 若当前只是联调接口，建议先保留 `joint_trajectory_topic` 输出，并根据情况暂时关闭自动执行。
 - 如果上层要稳定调用，请约定：
   - `target_position` 固定 3 维
   - `target_orientation` 固定 4 维四元数 `[qx, qy, qz, qw]`

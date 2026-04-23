@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <chrono>
 #include <filesystem>
 #include <cctype>
 #include <stdexcept>
@@ -172,6 +171,8 @@ bool TwoStagePlannerManager::initialize(
     system_config_.display_trajectory_topic, qos);
   marker_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
     system_config_.marker_topic, qos);
+  joint_traj_pub_ = node_->create_publisher<trajectory_msgs::msg::JointTrajectory>(
+    system_config_.joint_trajectory_topic, qos);
   joint_state_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
     system_config_.joint_states_topic,
     rclcpp::SensorDataQoS(),
@@ -236,6 +237,13 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
 
   publishDisplayTrajectories(stage1_traj, stage2_plan.trajectory_, q_start);
   publishDebugMarkers(summary, stage1_traj, stage2_plan.trajectory_);
+  const auto merged_joint_trajectory =
+    concatenateJointTrajectories(stage1_traj, stage2_plan.trajectory_);
+  joint_traj_pub_->publish(merged_joint_trajectory);
+  if (system_config_.execute_joint_trajectory && !executeJointTrajectory(merged_joint_trajectory)) {
+    RCLCPP_ERROR(node_->get_logger(), "Failed to execute merged joint trajectory.");
+    return false;
+  }
 
   RCLCPP_INFO(node_->get_logger(), "===== Two-Stage Planning Summary =====");
   RCLCPP_INFO(node_->get_logger(), "q_start: [%f, %f, %f, %f]",
@@ -648,6 +656,131 @@ bool TwoStagePlannerManager::timeParameterizeTrajectory(
   }
 
   robot_traj.getRobotTrajectoryMsg(trajectory);
+  return true;
+}
+
+trajectory_msgs::msg::JointTrajectory TwoStagePlannerManager::concatenateJointTrajectories(
+  const moveit_msgs::msg::RobotTrajectory& stage1_traj,
+  const moveit_msgs::msg::RobotTrajectory& stage2_traj) const
+{
+  const auto& stage1_joint_traj = stage1_traj.joint_trajectory;
+  const auto& stage2_joint_traj = stage2_traj.joint_trajectory;
+
+  if (stage1_joint_traj.points.empty()) {
+    return stage2_joint_traj;
+  }
+  if (stage2_joint_traj.points.empty()) {
+    return stage1_joint_traj;
+  }
+
+  trajectory_msgs::msg::JointTrajectory merged = stage1_joint_traj;
+  const auto& last_stage1_time = stage1_joint_traj.points.back().time_from_start;
+  const int64_t stage1_offset_ns =
+    static_cast<int64_t>(last_stage1_time.sec) * 1000000000LL +
+    static_cast<int64_t>(last_stage1_time.nanosec);
+
+  const std::size_t start_index = 1;  // Skip duplicated stage boundary point.
+  for (std::size_t i = start_index; i < stage2_joint_traj.points.size(); ++i) {
+    auto point = stage2_joint_traj.points[i];
+    const int64_t point_ns =
+      static_cast<int64_t>(point.time_from_start.sec) * 1000000000LL +
+      static_cast<int64_t>(point.time_from_start.nanosec);
+    const int64_t merged_ns = stage1_offset_ns + point_ns;
+    point.time_from_start.sec = static_cast<int32_t>(merged_ns / 1000000000LL);
+    point.time_from_start.nanosec = static_cast<uint32_t>(merged_ns % 1000000000LL);
+    merged.points.push_back(point);
+  }
+  return merged;
+}
+
+bool TwoStagePlannerManager::executeJointTrajectory(
+  const trajectory_msgs::msg::JointTrajectory& trajectory) const
+{
+  if (trajectory.points.empty()) {
+    RCLCPP_ERROR(node_->get_logger(), "Cannot execute empty joint trajectory.");
+    return false;
+  }
+
+  const auto unique_suffix = std::to_string(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+  auto exec_node = rclcpp::Node::make_shared(
+    "joint_trajectory_exec_client_" + unique_suffix,
+    rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(exec_node);
+  std::thread spinner([&executor]() { executor.spin(); });
+
+  using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
+  const auto action_client =
+    rclcpp_action::create_client<FollowJointTrajectory>(
+      exec_node, system_config_.follow_joint_trajectory_action);
+
+  const auto server_wait =
+    std::chrono::duration<double>(std::max(0.0, system_config_.execute_action_server_wait_sec));
+  if (!action_client->wait_for_action_server(server_wait)) {
+    executor.cancel();
+    spinner.join();
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "FollowJointTrajectory action server %s was not available within %.2f s.",
+      system_config_.follow_joint_trajectory_action.c_str(),
+      system_config_.execute_action_server_wait_sec);
+    return false;
+  }
+
+  FollowJointTrajectory::Goal goal;
+  goal.trajectory = trajectory;
+  auto goal_future = action_client->async_send_goal(goal);
+  const auto result_wait =
+    std::chrono::duration<double>(std::max(0.0, system_config_.execute_result_wait_sec));
+  if (goal_future.wait_for(result_wait) != std::future_status::ready) {
+    executor.cancel();
+    spinner.join();
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Timed out while sending FollowJointTrajectory goal after %.2f s.",
+      system_config_.execute_result_wait_sec);
+    return false;
+  }
+
+  const auto goal_handle = goal_future.get();
+  if (!goal_handle) {
+    executor.cancel();
+    spinner.join();
+    RCLCPP_ERROR(node_->get_logger(), "FollowJointTrajectory goal was rejected by controller.");
+    return false;
+  }
+
+  auto result_future = action_client->async_get_result(goal_handle);
+  if (result_future.wait_for(result_wait) != std::future_status::ready) {
+    executor.cancel();
+    spinner.join();
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Timed out while waiting for FollowJointTrajectory result after %.2f s.",
+      system_config_.execute_result_wait_sec);
+    return false;
+  }
+
+  const auto wrapped_result = result_future.get();
+  executor.cancel();
+  spinner.join();
+
+  if (wrapped_result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "FollowJointTrajectory execution failed with code %d and error_code %d.",
+      static_cast<int>(wrapped_result.code),
+      wrapped_result.result ? wrapped_result.result->error_code : -1);
+    return false;
+  }
+
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "FollowJointTrajectory execution succeeded on %s.",
+    system_config_.follow_joint_trajectory_action.c_str());
   return true;
 }
 

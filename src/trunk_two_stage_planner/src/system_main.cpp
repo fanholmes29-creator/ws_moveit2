@@ -159,6 +159,7 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingString(node, "planning_frame", config.planning_frame);
   declareIfMissingString(node, "marker_topic", config.marker_topic);
   declareIfMissingString(node, "display_trajectory_topic", config.display_trajectory_topic);
+  declareIfMissingString(node, "joint_trajectory_topic", config.joint_trajectory_topic);
   declareIfMissingDouble(node, "planning_time", config.planning_time);
   declareIfMissingInt(node, "planning_attempts", config.planning_attempts);
   declareIfMissingDouble(node, "velocity_scaling", config.velocity_scaling);
@@ -181,6 +182,12 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
     config.allow_start_state_fallback_to_config);
   declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
   declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
+  declareIfMissingBool(node, "execute_joint_trajectory", config.execute_joint_trajectory);
+  declareIfMissingString(
+    node, "follow_joint_trajectory_action", config.follow_joint_trajectory_action);
+  declareIfMissingDouble(
+    node, "execute_action_server_wait_sec", config.execute_action_server_wait_sec);
+  declareIfMissingDouble(node, "execute_result_wait_sec", config.execute_result_wait_sec);
   declareIfMissingBool(node, "export_csv", config.export_csv);
 
   config.stage1_group_name = node->get_parameter("stage1_group_name").as_string();
@@ -188,6 +195,7 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.planning_frame = node->get_parameter("planning_frame").as_string();
   config.marker_topic = node->get_parameter("marker_topic").as_string();
   config.display_trajectory_topic = node->get_parameter("display_trajectory_topic").as_string();
+  config.joint_trajectory_topic = node->get_parameter("joint_trajectory_topic").as_string();
   config.planning_time = node->get_parameter("planning_time").as_double();
   config.planning_attempts = node->get_parameter("planning_attempts").as_int();
   config.velocity_scaling = node->get_parameter("velocity_scaling").as_double();
@@ -208,6 +216,12 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
     node->get_parameter("allow_start_state_fallback_to_config").as_bool();
   config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
   config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
+  config.execute_joint_trajectory = node->get_parameter("execute_joint_trajectory").as_bool();
+  config.follow_joint_trajectory_action =
+    node->get_parameter("follow_joint_trajectory_action").as_string();
+  config.execute_action_server_wait_sec =
+    node->get_parameter("execute_action_server_wait_sec").as_double();
+  config.execute_result_wait_sec = node->get_parameter("execute_result_wait_sec").as_double();
   config.export_csv = node->get_parameter("export_csv").as_bool();
   return config;
 }

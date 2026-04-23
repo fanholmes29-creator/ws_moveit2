@@ -22,6 +22,29 @@
 
 它们在 SRDF 层面共享同一条 trunk 运动链，但在工程层面承载不同的阶段逻辑与约束。
 
+---
+
+## 系统入口总览
+
+当前包内有 5 类入口，建议按用途区分使用：
+
+| 入口 | 名称 | 作用 | 是否依赖 MoveIt 规划 |
+|---|---|---|---|
+| 主系统 | `two_stage_planner_system` | 按本地参数执行一次完整两阶段规划 | 是 |
+| Service 系统 | `two_stage_planner_service` | 对上层开放目标位姿请求接口 | 是 |
+| 离线分析工具 | `two_stage_planner_analysis_tool` | 离线算法评估、heatmap、summary 导出 | 否 |
+| FK 工具 | `fk_pose_from_joint` | 关节空间目标转目标位姿 | 否 |
+| IK 工具 | `ik_joint_from_pose` | 目标位姿转关节空间目标 | 否 |
+
+建议：
+
+- 本地调试主流程：用 `two_stage_planner_system`
+- 上层系统集成：用 `two_stage_planner_service`
+- 调参分析：用 `two_stage_planner_analysis_tool`
+- 生成/校验配置：用 `fk_pose_from_joint` 和 `ik_joint_from_pose`
+
+---
+
 ## 当前系统架构
 
 当前工程按功能分为四层：
@@ -50,11 +73,110 @@
 - `src/trajectory_utils.cpp`
   - CSV / summary / geometry_points 导出实现
 - `src/fk_pose_from_joint_main.cpp`
-  - 关节空间目标转目标位姿（FK）的小工具入口，直接输出可粘贴的 `target_position/target_orientation`
+  - 关节空间目标转目标位姿（FK）工具
 - `src/ik_joint_from_pose_main.cpp`
-  - 目标位姿转关节空间目标（IK）的小工具入口，直接输出可粘贴的 `goal_joint_target`
+  - 目标位姿转关节空间目标（IK）工具
 - `src/two_stage_planner_service_main.cpp`
-  - 对上层开放的 Service 入口，接收外部目标位姿或回退到本地默认目标
+  - 对上层开放的 Service 入口
+
+---
+
+## 输入与输出
+
+### 输入
+
+系统有两类输入：
+
+#### 1. 起点输入
+
+起点本质上是关节状态 `q_start`，当前优先级为：
+
+1. 实时 `/joint_states`
+2. 配置文件中的 `q_start`（仅在允许回退时）
+
+#### 2. 目标输入
+
+目标位姿 `T_d` 有三种来源：
+
+1. 外部 service 请求（若 `use_external_target=true`）
+2. `goal_joint_target` 的 FK（若 `use_goal_state_as_target_pose=true`）
+3. `target_position + target_orientation`（若 `use_goal_state_as_target_pose=false`）
+
+### 输出
+
+系统当前输出：
+
+- 两阶段规划轨迹（MoveIt 内部轨迹 + RViz 显示）
+- `trajectory.csv`
+- `summary.txt`
+- `stage1_heatmap.csv`
+- `geometry_points.csv`
+
+注意：
+
+- 当前主系统默认是“规划 + 显示 + 导出”
+- **不会自动执行到底层 ros2_control**
+
+---
+
+## 起点与终点的确定逻辑
+
+### 1. 起点如何确定
+
+当前系统支持“实时起点模式”。
+
+若：
+
+- `use_live_joint_state_as_start: true`
+
+则系统会：
+
+1. 订阅 `joint_states_topic`（默认 `/joint_states`）
+2. 按 trunk 四个关节名重排得到当前关节状态
+3. 在 `live_start_state_wait_sec` 时间内等待有效状态
+4. 若成功收到，则使用实时关节状态作为本次规划起点
+5. 若未收到：
+   - `allow_start_state_fallback_to_config: true` -> 回退到配置 `q_start`
+   - `allow_start_state_fallback_to_config: false` -> 直接报错退出
+
+若：
+
+- `use_live_joint_state_as_start: false`
+
+则系统直接使用配置文件中的：
+
+- `q_start`
+
+### 2. 终点位姿如何确定
+
+若使用主系统或 service 本地默认目标逻辑，终点位姿按以下规则确定：
+
+#### 模式 A：由关节目标 FK 推导
+
+- `use_goal_state_as_target_pose: true`
+- 终点位姿由 `goal_joint_target` 经 FK 得到
+
+#### 模式 B：直接指定位姿
+
+- `use_goal_state_as_target_pose: false`
+- 终点位姿直接使用：
+  - `target_position`
+  - `target_orientation`
+
+#### 模式 C：外部 service 位姿优先
+
+若 service 请求中：
+
+- `use_external_target: true`
+
+则直接使用外部传入的：
+
+- `target_position`
+- `target_orientation`
+
+此时不会再用本地默认目标逻辑。
+
+---
 
 ## 两阶段算法流程
 
@@ -67,7 +189,7 @@
 流程如下：
 
 1. 输入最终目标位姿 `T_d`
-2. 先求最终 IK 解 `q_goal`
+2. 求最终 IK 解 `q_goal_ik`
 3. 构造第一阶段受限候选族  
    `q_pre(q1, q2) = [q1, q2, q1 + q2, q4_fix]`
 4. 对每个候选 `q_pre`，先检查：
@@ -76,10 +198,44 @@
    - 投影几何引导量
    - 离起点偏移
    - 关节限位
-   - 安全裕度（当前尚未完全工程化）
+   - 安全裕度
 6. 选出最终 `q_pre`
 7. 第一阶段规划到 `q_pre`
 8. 第二阶段从第一阶段终点继续，恢复到最终目标位姿
+
+### 算法流程图
+
+```mermaid
+flowchart TD
+    A[系统启动] --> B[读取算法配置与系统配置]
+    B --> C{是否启用实时起点}
+    C -- 是 --> D[订阅 /joint_states]
+    D --> E{在等待时间内是否收到有效关节状态}
+    E -- 是 --> F[使用实时 q_start]
+    E -- 否 --> G{是否允许回退到配置 q_start}
+    G -- 是 --> H[使用配置 q_start]
+    G -- 否 --> X[报错退出]
+    C -- 否 --> H
+
+    F --> I{目标位姿来源}
+    H --> I
+
+    I -- 外部 service 提供 --> J[使用外部 target_pose]
+    I -- 本地默认目标 --> K{use_goal_state_as_target_pose}
+    K -- true --> L[对 goal_joint_target 做 FK 得到 T_d]
+    K -- false --> M[使用 target_position/target_orientation]
+
+    J --> N[算法层求解 q_goal_ik]
+    L --> N
+    M --> N
+
+    N --> O[stage1 搜索 q_pre]
+    O --> P[stage2 锁定 q1/q2 搜索 q_goal_stage2]
+    P --> Q[MoveIt 规划 stage1]
+    Q --> R[MoveIt 规划 stage2]
+    R --> S[发布 RViz 轨迹与 Marker]
+    S --> T[导出 trajectory.csv / summary.txt / heatmap]
+```
 
 ### 代价函数与排序规则
 
@@ -186,13 +342,15 @@ J_{\text{ik}}
 
 因此第一阶段必须被理解为“笛卡尔预备态规划”，而不是单纯的终点关节目标规划。
 
+---
+
 ## 当前工程实现现状
 
 这里必须严格区分“方法定义”和“当前实现层级”。
 
 ### 已实现
 
-- 目标位姿 `T_d` 到最终 IK 解 `q_goal` 的求解
+- 目标位姿 `T_d` 到最终 IK 解 `q_goal_ik` 的求解
 - 基于 `/joint_states` 的实时起点读取（可选回退到配置 `q_start`）
 - 第一阶段候选预备态 `q_pre` 搜索
 - 第二阶段完整位姿恢复性验证
@@ -201,6 +359,8 @@ J_{\text{ik}}
 - RViz marker 显示关键几何点与阶段路径
 - 两阶段轨迹导出
 - summary / heatmap / geometry_points 导出
+- Service 目标位姿输入
+- FK / IK 小工具
 
 ### 当前仍是工程近似的地方
 
@@ -211,6 +371,7 @@ J_{\text{ik}}
 - 第一阶段当前采用的是工程近似：
   - 先由算法层求 `q_pre`
   - MoveIt 规划到 `q_pre`
+  - 可选：参考点笛卡尔导向（当前为低风险工程版）
   - 优先尝试 upright path constraint
   - 若失败则回退为无 path constraint 的 `stage1_group` 规划
 - 第二阶段当前采用的是工程近似：
@@ -231,6 +392,30 @@ J_{\text{ik}}
 
 **可运行的工程版第一版系统**
 
+---
+
+## 当前系统边界
+
+当前包负责：
+
+- 从起点和目标位姿出发完成两阶段规划
+- 输出可视化轨迹和调试数据
+- 输出完整 `trajectory_msgs/msg/JointTrajectory`
+- 可选将完整轨迹作为 `FollowJointTrajectory` goal 发给 `ros2_control`
+- 给上层提供目标位姿请求接口
+
+当前包默认**不负责**：
+
+- 真实硬件闭环控制
+- 将 stage1/2 作为严格独立的物理链执行
+
+说明：
+
+- 当前版本已经支持将拼接后的完整轨迹直接发送到 `ros2_control` 的 `FollowJointTrajectory` action。
+- 但当前默认底层仍然是 FakeSystem / mock controller 联调环境，不应直接等同于真实硬件闭环能力。
+
+---
+
 ## 目录结构说明
 
 当前主线包：
@@ -248,20 +433,16 @@ J_{\text{ik}}
     - `two_stage_planner_manager.cpp`
     - `trajectory_utils.cpp`
     - `system_main.cpp`
-    - `analysis_tool_main.cpp`  
-      说明：离线分析工具入口，对应 `two_stage_planner_analysis_tool`
+    - `analysis_tool_main.cpp`
     - `fk_pose_from_joint_main.cpp`
-      说明：FK 打印工具入口，对应 `fk_pose_from_joint`
     - `ik_joint_from_pose_main.cpp`
-      说明：IK 反解工具入口，对应 `ik_joint_from_pose`
     - `two_stage_planner_service_main.cpp`
-      说明：Service 入口，对应 `two_stage_planner_service`
   - `srv/`
     - `PlanToPose.srv`
-      说明：上层位姿请求接口定义
   - `config/`
     - `two_stage_system_params.yaml`
     - `two_stage_system.rviz`
+    - `README.md`
     - `tools/`
       - `two_stage_planner_analysis_tool.yaml`
   - `launch/`
@@ -269,7 +450,6 @@ J_{\text{ik}}
     - `two_stage_planner_service.launch.py`
   - `scripts/`
     - `example_plan_to_pose_client`
-      说明：模拟上层调用 `/two_stage_planner/plan_to_pose` 的示例客户端
   - `README.md`
 
 支撑包：
@@ -283,6 +463,40 @@ J_{\text{ik}}
 
 - `trunk_moveit_cpp_demo/`
 - `trunk_moveit/`
+
+---
+
+## 关键配置文件
+
+### 主配置
+
+- `config/two_stage_system_params.yaml`
+
+负责：
+
+- 起点与目标位姿来源
+- 算法参数
+- MoveIt 运行参数
+- 实时起点模式
+- 导出与话题
+
+### 配置文档
+
+- `config/README.md`
+
+建议你把它当成：
+
+- 参数字典
+- 常见问题定位表
+- service/example 与实时起点模式的配置导航
+
+### RViz 配置
+
+- `config/two_stage_system.rviz`
+
+只影响显示，不改算法行为。
+
+---
 
 ## 如何编译
 
@@ -301,6 +515,8 @@ source install/setup.bash
 colcon build --packages-select trunk_two_stage_planner --symlink-install
 source install/setup.bash
 ```
+
+---
 
 ## 如何启动
 
@@ -345,10 +561,25 @@ ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py service_
 
 说明：
 
-- service 模式与普通系统模式一样，会优先使用实时 `/joint_states` 作为起点。
-- 上层只负责提供目标位姿；当前起点不建议由上层通过位姿反推，而是由系统内部直接读取当前关节状态。
+- Service 模式与普通系统模式一样，会优先使用实时 `/joint_states` 作为起点。
+- 上层只负责提供目标位姿；当前起点由系统内部读取当前关节状态。
 
-### 离线分析工具（保留但降级）
+### 轨迹输出与执行模式
+
+无论是主系统模式还是 service 模式，只要两阶段规划成功，系统都会：
+
+1. 先发布一条完整的 `trajectory_msgs/msg/JointTrajectory`
+2. 再按配置决定是否把该轨迹作为 `FollowJointTrajectory` goal 发给 `ros2_control`
+
+默认输出 topic：
+
+- `/two_stage_joint_trajectory`
+
+默认 action：
+
+- `/trunk_group_controller/follow_joint_trajectory`
+
+### 离线分析工具
 
 ```bash
 ros2 run trunk_two_stage_planner two_stage_planner_analysis_tool \
@@ -356,95 +587,9 @@ ros2 run trunk_two_stage_planner two_stage_planner_analysis_tool \
   --params-file ~/ws_moveit2/src/trunk_two_stage_planner/config/tools/two_stage_planner_analysis_tool.yaml
 ```
 
-### FK 打印工具（输入关节目标，输出可粘贴位姿）
+---
 
-用途：
-
-- 输入关节空间目标（`goal_joint_target`）
-- 直接打印两行可粘贴到 `two_stage_system_params.yaml` 的：
-  - `target_position: [...]`
-  - `target_orientation: [...]`
-
-示例命令：
-
-```
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 run trunk_two_stage_planner fk_pose_from_joint --ros-args -p goal_joint_target:="[-1.5, 1.5, 0.7, 0.6]"
-```
-
-示例输出（格式示意）：
-
-```text
-target_position: [0.172874, 0.000000, 0.610959]
-target_orientation: [0.029503, 0.095375, 0.294044, 0.950564]
-source_goal_joint_target: [-1.000000, 1.500000, 0.700000, 0.600000]
-```
-
-注意：
-
-- 参数数组必须同类型，建议统一写成浮点（如 `-1.0` 而不是 `-1`）。
-- 若你只想用 FK 结果进行规划，可以把输出复制到：
-  - `target_position`
-  - `target_orientation`
-  并设置 `use_goal_state_as_target_pose: false`。
-
-### IK 反解工具（输入目标位姿，输出可粘贴关节值）
-
-用途：
-
-- 输入目标位姿：
-  - `target_position`
-  - `target_orientation`
-- 直接打印可粘贴到 `two_stage_system_params.yaml` 的：
-  - `goal_joint_target: [...]`
-- 同时打印当前搜索到的全部 IK 候选解，便于判断是否存在多解以及最终为何选中某一组解
-
-示例命令（使用当前参数文件中的位姿）：
-
-```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 run trunk_two_stage_planner ik_joint_from_pose \
-  --ros-args \
-  --params-file ~/ws_moveit2/src/trunk_two_stage_planner/config/two_stage_system_params.yaml
-```
-
-前提是参数文件里已经给出：
-
-```yaml
-target_position: [0.196101, 0.000000, 0.602433]
-target_orientation: [-0.014919, -0.098712, 0.148692, 0.983831]
-```
-
-示例输出（格式示意）：
-
-```text
-target_position: [0.196101, 0.000000, 0.602433]
-target_orientation: [-0.014919, -0.098712, 0.148692, 0.983831]
-ik_candidate_count: 6
-ik_candidate_0: [0.092349, -1.400004, -1.507655, 0.300001]
-ik_candidate_0_cost: 4.502093
-ik_candidate_1: [-1.100002, 1.400002, 0.100002, 0.300001]
-ik_candidate_1_cost: 3.312076
-ik_candidate_2: [0.092348, -1.400002, -1.507653, 0.300001]
-ik_candidate_2_cost: 4.502077
-...
-goal_joint_target: [-1.100002, 1.400002, 0.100002, 0.300001]
-used_fallback_goal: false
-```
-
-注意：
-
-- `target_position` 必须正好 3 维。
-- `target_orientation` 必须正好 4 维，顺序为四元数 `[qx, qy, qz, qw]`。
-- 工具会自动检查四元数范数并归一化。
-- 该工具内部关闭了 fallback 伪目标，因此输出的是实际求得的 IK 解。
-- `ik_candidate_*` 表示本次通过多 seed 搜索收集到的所有 IK 候选。
-- `ik_candidate_*_cost` 是候选排序代价，主要反映：
-  - 距离 `q_start` 的偏移大小
-  - 是否更接近关节限位
-- `goal_joint_target` 是在所有候选中按代价选出的最终推荐解，并不是“唯一数学解”。
+## Service / Example 用法
 
 ### Service 直接调用（外部位姿优先，本地默认兜底）
 
@@ -469,7 +614,7 @@ ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/Pl
 - 回退到本地参数配置的目标逻辑：
   - 若 `use_goal_state_as_target_pose: true`，则使用 `goal_joint_target` 做 FK
   - 否则使用 `target_position/target_orientation`
-- 但规划起点仍优先来自实时 `/joint_states`，而不是固定 YAML 起点
+- 规划起点仍优先来自实时 `/joint_states`
 
 #### 2. 使用外部位姿
 
@@ -483,7 +628,7 @@ ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/Pl
 - `target_position` 必须是 3 维
 - `target_orientation` 必须是 4 维四元数 `[qx, qy, qz, qw]`
 - 服务端会检查数值合法性，并自动归一化四元数
-- 规划起点由系统内部读取当前关节状态，不需要上层额外提供
+- 起点由系统内部读取当前关节状态，不需要上层额外提供
 
 #### 3. 返回内容
 
@@ -523,6 +668,124 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 - `used_external_target`
 - 实际使用的目标位姿
 
+---
+
+## 轨迹输出与控制器执行
+
+当前系统在两阶段规划成功后，会把 `stage1` 与 `stage2` 两段轨迹拼接成一条完整的关节轨迹。
+
+### 1. 标准轨迹消息输出
+
+系统会发布：
+
+- topic：`/two_stage_joint_trajectory`
+- 类型：`trajectory_msgs/msg/JointTrajectory`
+
+这条消息适合：
+
+- 给同事订阅
+- 做中间层桥接
+- 做离线回放/检查
+
+### 2. FollowJointTrajectory 执行
+
+如果配置里开启了执行开关，系统会进一步把上面的完整轨迹作为 action goal 发给：
+
+- `/trunk_group_controller/follow_joint_trajectory`
+
+类型：
+
+- `control_msgs/action/FollowJointTrajectory`
+
+这就是当前与 `ros2_control` 对接的标准长期方式。
+
+### 3. 轨迹内容说明
+
+完整轨迹中包含：
+
+- `joint_names`
+  - `trunk_joint1`
+  - `trunk_joint2`
+  - `trunk_joint3`
+  - `trunk_joint4`
+- `points`
+  - `positions`
+  - `velocities`
+  - `accelerations`
+  - `time_from_start`
+
+系统会自动处理：
+
+- stage1 / stage2 两段轨迹拼接
+- stage2 时间偏移
+- 阶段边界重复点去重
+
+### 4. 当前能力边界
+
+当前已经实现：
+
+- 生成完整 `JointTrajectory`
+- 发布完整 `JointTrajectory`
+- 可选发送 `FollowJointTrajectory` action goal
+
+当前仍需注意：
+
+- 默认底层是 FakeSystem / mock controller
+- 真正接入实物时，还需要底层控制器和硬件侧完成联调
+- 当前 README 中的“执行成功”应理解为控制器接口级成功，不等同于真实物理系统闭环性能完全验证
+
+---
+
+## FK / IK 工具
+
+### FK 打印工具（输入关节目标，输出可粘贴位姿）
+
+用途：
+
+- 输入关节空间目标（`goal_joint_target`）
+- 直接打印两行可粘贴到 `two_stage_system_params.yaml` 的：
+  - `target_position: [...]`
+  - `target_orientation: [...]`
+
+示例命令：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run trunk_two_stage_planner fk_pose_from_joint --ros-args -p goal_joint_target:="[-1.5, 1.5, 0.7, 0.6]"
+```
+
+### IK 反解工具（输入目标位姿，输出可粘贴关节值）
+
+用途：
+
+- 输入目标位姿：
+  - `target_position`
+  - `target_orientation`
+- 输出：
+  - `goal_joint_target: [...]`
+- 同时打印当前搜索到的全部 IK 候选解
+
+示例命令：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run trunk_two_stage_planner ik_joint_from_pose \
+  --ros-args \
+  --params-file ~/ws_moveit2/src/trunk_two_stage_planner/config/two_stage_system_params.yaml
+```
+
+说明：
+
+- `target_position` 必须正好 3 维
+- `target_orientation` 必须正好 4 维，顺序为 `[qx, qy, qz, qw]`
+- 工具会自动检查四元数范数并归一化
+- `ik_candidate_*` 表示通过多 seed 搜索到的全部候选
+- `goal_joint_target` 是按工程代价选出的最终推荐解，不是唯一数学解
+
+---
+
 ## RViz 中看什么
 
 启动工程系统后，重点查看两类显示：
@@ -554,6 +817,8 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 - 两阶段切换是否清楚
 - 第二阶段是否是在 stage1 终点的基础上恢复
 
+---
+
 ## 关键输出与调试文件
 
 工程系统和分析工具仍会导出调试文件：
@@ -574,7 +839,9 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 
 说明：
 
-- 若启用了实时起点，`summary.txt` 中的 `q_start` 表示本次规划实际读取到的当前关节状态，而不一定等于参数文件中的默认 `q_start`。
+- 若启用了实时起点，`summary.txt` 中的 `q_start` 表示本次规划实际读取到的当前关节状态，而不一定等于参数文件中的默认 `q_start`
+
+---
 
 ## 当前限制与下一步增强方向
 
@@ -585,6 +852,8 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 - 两阶段 manager 调度
 - 轨迹显示
 - marker 调试
+- 实时起点支持
+- service / example / FK / IK 工具链
 
 但仍有明显增强空间：
 
@@ -593,13 +862,14 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 3. 在 MoveIt 层面更严格表达 stage2 对 `q1 / q2` 的锁定或弱松弛
 4. 将 `q3 = q1 + q2` 从算法层近似推进到更强的工程约束表达
 5. 对 stage1 / stage2 误差收敛做更系统的参数整定
+6. 将规划结果与底层 `ros2_control` 执行层对接，形成完整闭环
+
+---
 
 ## Legacy 包说明
 
 以下包仍保留，但不再是工程主入口：
 
-- `trunk_moveit_cpp_demo`
-  - 早期单包 MoveIt2 demo
 - `trunk_moveit`
   - 早期实验性 MoveIt 入口
 

@@ -19,13 +19,13 @@ two_stage_planner_system:
     reference_link_name: "trunk_link4"
     planning_frame: "chassis_base_link"
 
-    q_start: [0.0, 0.0, 0.0, 0.0]
+    q_start: [0.4, 0.4, 0.4, 0.4]
     goal_joint_target: [-1.0, 1.5, 0.7, 0.6]
     q_goal_fallback: [-1.0, 1.5, 0.7, 0.6]
     # 目标策略开关：
     # true -> 由 goal_joint_target 的 FK 推导目标位姿
     # false -> 使用下方 target_position + target_orientation
-    use_goal_state_as_target_pose: false
+    use_goal_state_as_target_pose: true
 
     allow_goal_fallback: true
     ik_attempts: 12
@@ -83,9 +83,14 @@ two_stage_planner_system:
     stage2_q12_tolerance: 0.03
     use_live_joint_state_as_start: true
     allow_start_state_fallback_to_config: true
-    live_start_state_wait_sec: 2.0
+    live_start_state_wait_sec: 4.0
     joint_states_topic: "/joint_states"
+    execute_joint_trajectory: true
+    follow_joint_trajectory_action: "/trunk_group_controller/follow_joint_trajectory"
+    execute_action_server_wait_sec: 5.0
+    execute_result_wait_sec: 30.0
 
     marker_topic: "/two_stage_debug_markers"
     display_trajectory_topic: "/display_planned_path"
+    joint_trajectory_topic: "/two_stage_joint_trajectory"
     export_csv: true
