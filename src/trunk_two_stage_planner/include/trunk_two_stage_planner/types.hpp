@@ -3,6 +3,7 @@
 #include <Eigen/Geometry>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace trunk_two_stage_planner
@@ -121,6 +122,91 @@ struct PlanningSummary
   std::vector<Stage1HeatmapSample> heatmap_samples;
 };
 
+/// 规划链路中的可诊断失败类型。
+enum class PlannerError
+{
+  Ok = 0,
+  NotInitialized,
+  InvalidInput,
+  StartStateUnavailable,
+  KinematicsInitializationFailed,
+  IkFailed,
+  Stage1SearchFailed,
+  Stage2OptimizationFailed,
+  Stage1MoveItPlanningFailed,
+  Stage2MoveItPlanningFailed,
+  TrajectoryExecutionFailed,
+  ExportFailed,
+  Unknown
+};
+
+inline const char* plannerErrorToString(PlannerError error)
+{
+  switch (error) {
+    case PlannerError::Ok:
+      return "Ok";
+    case PlannerError::NotInitialized:
+      return "NotInitialized";
+    case PlannerError::InvalidInput:
+      return "InvalidInput";
+    case PlannerError::StartStateUnavailable:
+      return "StartStateUnavailable";
+    case PlannerError::KinematicsInitializationFailed:
+      return "KinematicsInitializationFailed";
+    case PlannerError::IkFailed:
+      return "IkFailed";
+    case PlannerError::Stage1SearchFailed:
+      return "Stage1SearchFailed";
+    case PlannerError::Stage2OptimizationFailed:
+      return "Stage2OptimizationFailed";
+    case PlannerError::Stage1MoveItPlanningFailed:
+      return "Stage1MoveItPlanningFailed";
+    case PlannerError::Stage2MoveItPlanningFailed:
+      return "Stage2MoveItPlanningFailed";
+    case PlannerError::TrajectoryExecutionFailed:
+      return "TrajectoryExecutionFailed";
+    case PlannerError::ExportFailed:
+      return "ExportFailed";
+    case PlannerError::Unknown:
+      return "Unknown";
+  }
+  return "Unknown";
+}
+
+/// 带错误原因与诊断摘要的规划结果，供 SDK/API 层直接返回给调用方。
+struct PlannerResult
+{
+  bool success = false;
+  PlannerError error = PlannerError::Unknown;
+  std::string message;
+  PlanningSummary summary;
+
+  static PlannerResult ok(
+    const PlanningSummary& summary,
+    std::string message = "Planning succeeded.")
+  {
+    PlannerResult result;
+    result.success = true;
+    result.error = PlannerError::Ok;
+    result.message = std::move(message);
+    result.summary = summary;
+    return result;
+  }
+
+  static PlannerResult fail(
+    PlannerError error,
+    std::string message,
+    const PlanningSummary& summary = PlanningSummary())
+  {
+    PlannerResult result;
+    result.success = false;
+    result.error = error;
+    result.message = std::move(message);
+    result.summary = summary;
+    return result;
+  }
+};
+
 /**
  * @brief 两阶段规划的算法层可调参数集合。
  *
@@ -187,7 +273,7 @@ struct PlannerConfig
   double stage2_duration = 3.0;
   double dt = 0.02;
 
-  std::string output_dir = "/home/wxl/ws_moveit2/csv/two_stage_kinematics";
+  std::string output_dir = "csv/two_stage_kinematics";
 };
 
 }  // namespace trunk_two_stage_planner

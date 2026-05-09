@@ -8,20 +8,21 @@ Visualization Manager:
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Value: true
-    - Class: moveit_rviz_plugin/MotionPlanning
-      Name: MotionPlanning
-      Planned Path:
-        Loop Animation: true
-        State Display Time: 0.05 s
-        Trajectory Topic: display_planned_path
-      Planning Scene Topic: monitored_planning_scene
-      Robot Description: robot_description
-      Scene Robot:
-        Robot Alpha: 0.5
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /trunk_robot/robot_description
+      Enabled: true
+      Visual Enabled: true
+      Collision Enabled: false
       Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Name: TwoStageDebug
-      Marker Topic: two_stage_debug_markers
+    - Class: rviz_default_plugins/TF
+      Name: TF
       Value: true
   Global Options:
     Fixed Frame: chassis_base_link

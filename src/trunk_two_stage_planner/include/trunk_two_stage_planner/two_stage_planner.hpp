@@ -37,6 +37,10 @@ public:
     const std::vector<double>& q_start,
     const geometry_msgs::msg::Pose& target_pose,
     PlanningSummary& summary) const;
+  /// 执行完整算法链，并返回明确失败原因与部分诊断摘要。
+  PlannerResult planDetailed(
+    const std::vector<double>& q_start,
+    const geometry_msgs::msg::Pose& target_pose) const;
 
   /// 求解目标位姿 IK，并按正则化代价选出最优候选。
   bool solveFinalIK(

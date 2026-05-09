@@ -27,6 +27,24 @@
   - MoveIt 规划行为
   - 导出与话题
 
+### Namespace 约定
+
+当前系统默认由 launch 放入私有 namespace：
+
+- 默认 namespace：`/trunk_robot`
+- joint state：`/trunk_robot/joint_states`
+- service：`/trunk_robot/two_stage_planner/plan_to_pose`
+- controller action：`/trunk_robot/trunk_group_controller/follow_joint_trajectory`
+
+因此本配置文件里的 topic/action 推荐写**相对名**，不要写全局绝对名：
+
+- 推荐：`joint_states_topic: "joint_states"`
+- 推荐：`follow_joint_trajectory_action: "trunk_group_controller/follow_joint_trajectory"`
+- 推荐：`display_trajectory_topic: "display_planned_path"`
+- 推荐：`marker_topic: "two_stage_debug_markers"`
+
+launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订阅全局 `/joint_states`，防止其他机器人或机构的 joint state 污染 trunk 的 MoveIt 和规划器。
+
 ### 常改参数（按用途）
 
 - **目标输入**
@@ -50,10 +68,13 @@
   - `planning_time`, `planning_attempts`
   - `velocity_scaling`, `acceleration_scaling`
   - `stage2_q12_tolerance`：stage2 锁定 q1/q2 的容差
-  - `use_live_joint_state_as_start`：是否优先使用实时 `/joint_states` 作为规划起点
+  - `use_live_joint_state_as_start`：是否优先使用 namespace 内实时 `joint_states` 作为规划起点
   - `allow_start_state_fallback_to_config`：若实时状态暂时不可用，是否回退到配置里的 `q_start`
   - `live_start_state_wait_sec`：等待实时起点到来的最长时间
   - `joint_states_topic`：当前关节状态订阅话题
+  - `expected_joint_names`：只接受这些 trunk 关节作为实时起点
+  - `strict_joint_states`：是否拒绝包含未知关节的 joint state
+  - `warn_unknown_joints`：非严格模式下，遇到未知关节是否报警
   - `joint_trajectory_topic`：完整轨迹输出 topic
   - `execute_joint_trajectory`：规划成功后是否继续向控制器发送轨迹
   - `follow_joint_trajectory_action`：控制器 action 名称
@@ -71,9 +92,10 @@
 - 先保证“可规划成功”，再追求“更严格阶段分离”。
 - 采样数提高会显著增加耗时，先做小步调整。
 - 在线运行时，推荐开启 `use_live_joint_state_as_start: true`，让系统从当前真实关节状态起步。
-- 若启动初期 `/joint_states` 可能有延迟，可保留 `allow_start_state_fallback_to_config: true` 作为兜底。
+- 若启动初期 `joint_states` 可能有延迟，可保留 `allow_start_state_fallback_to_config: true` 作为兜底。
 - 若你只是想先把轨迹给同事而不立刻执行到底层，可关闭 `execute_joint_trajectory`，只保留标准 `JointTrajectory` 输出。
 - 若你要直接和 `ros2_control` 控制器联调，则应确认 `follow_joint_trajectory_action` 与控制器配置一致。
+- 多机器人网络里不要把 `joint_states_topic` 改成 `/joint_states`；除非你明确知道全局 topic 只有 trunk 一个发布者。
 
 ---
 
@@ -112,13 +134,14 @@
 ### 常改项
 
 - `Fixed Frame`（需与系统 frame 一致）
-- `Trajectory Topic`（通常是 `/display_planned_path`）
-- `Marker Topic`（通常是 `/two_stage_debug_markers`）
+- `Trajectory Topic`（通常是 `display_planned_path`，随 namespace 解析）
+- `Marker Topic`（通常是 `two_stage_debug_markers`，随 namespace 解析）
 - 默认视角参数（`Distance`、`Yaw`、`Pitch`、`Focal Point`）
 
 ### 修改建议
 
 - 若“看不到轨迹/标记”，先检查这里的话题名和 frame 是否一致。
+- RViz 也在 `/trunk_robot` namespace 下启动，因此这里的 `Trajectory Topic` / `Marker Topic` 保持相对名即可。
 
 ---
 
@@ -128,7 +151,7 @@
   - 启动：
     - `ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py`
   - 调用接口：
-    - `/two_stage_planner/plan_to_pose`
+    - `/trunk_robot/two_stage_planner/plan_to_pose`
     - 类型：`trunk_two_stage_planner/srv/PlanToPose`
   - 若上层传入：
     - `use_external_target: true`
@@ -160,7 +183,7 @@
 - **我想规划后直接执行到底层 ros2_control**
   - 改 `two_stage_system_params.yaml`：
     - `execute_joint_trajectory: true`
-    - `follow_joint_trajectory_action: "/trunk_group_controller/follow_joint_trajectory"`
+    - `follow_joint_trajectory_action: "trunk_group_controller/follow_joint_trajectory"`
     - `execute_action_server_wait_sec`
     - `execute_result_wait_sec`
   - 这会把完整轨迹作为 `FollowJointTrajectory` goal 发给控制器。
@@ -173,11 +196,20 @@
 - **我希望系统从机器人当前状态开始规划，而不是从固定 `q_start` 开始**
   - 改 `two_stage_system_params.yaml`：
     - `use_live_joint_state_as_start: true`
-    - `joint_states_topic: "/joint_states"`
+    - `joint_states_topic: "joint_states"`
   - 如果你希望状态没到就直接失败：
     - `allow_start_state_fallback_to_config: false`
   - 如果你希望先等一会再决定是否回退：
     - 调 `live_start_state_wait_sec`
+
+- **我想确认 namespace 隔离是否生效**
+  - 启动后检查：
+    - `ros2 topic info /trunk_robot/joint_states -v`
+    - `ros2 topic info /joint_states -v`
+  - 期望结果：
+    - `/trunk_robot/joint_states` 有 trunk 的 publisher/subscriber
+    - `/joint_states` 不存在，或至少没有 trunk 系统节点订阅
+  - 如果看到 `/two_stage_planner_system` 订阅全局 `/joint_states`，说明启动的是旧进程或旧 install，需要重新编译并 `source install/setup.bash`
 
 - **我想保留固定起点模式（例如离线复现或对比实验）**
   - 改 `two_stage_system_params.yaml`：
@@ -207,6 +239,22 @@
   - 改 `two_stage_system_params.yaml` 或分析配置：
     - 降低 `stage1_*samples`、`stage2_*samples`
 
+- **日志停在 `Planning stage1 with MoveIt group 'stage1_group'...`**
+  - 这通常不是 joint state 问题，因为此时系统已经拿到了 `q_start`。
+  - 重点看后续是否出现：
+    - `Connecting stage1 MoveGroupInterface to namespace '/trunk_robot'...`
+    - `Stage1 MoveGroupInterface connected.`
+    - `Stage1 computing Cartesian path ...`
+    - `Stage1 Cartesian fraction=...`
+  - 如果卡在连接 MoveGroupInterface，优先检查 planner 和 move_group 是否在同一个 namespace：
+    - `ros2 node list | grep trunk_robot`
+  - 如果卡在 Cartesian / OMPL 规划，优先调：
+    - `planning_time`
+    - `planning_attempts`
+    - `stage1_use_cartesian`
+    - `stage1_min_fraction`
+    - `stage1_q4_tolerance`
+
 - **轨迹能跑但姿态/位置恢复不理想**
   - 先用 `tools/two_stage_planner_analysis_tool.yaml` 做离线调参：
     - 调 `stage2_pose_wp`、`stage2_pose_wR`
@@ -216,6 +264,22 @@
   - 改 `two_stage_system.rviz`：
     - 校对 `Trajectory Topic`、`Marker Topic`、`Fixed Frame`
   - 同时确认主配置里的 `display_trajectory_topic`、`marker_topic`
+  - 规划成功后还可以检查：
+    - `ros2 topic info /trunk_robot/display_planned_path -v`
+    - `ros2 topic info /trunk_robot/two_stage_debug_markers -v`
+    - `ros2 topic info /trunk_robot/two_stage_joint_trajectory -v`
+
+- **启动日志太多**
+  - `load_yaml()`、KDL root inertia、Octomap、RViz plugin collision 等多为 MoveIt/RViz/ros2_control 启动噪声。
+  - 调试规划主链路时，优先看 `[trunk_robot.two_stage_planner_system]` 日志。
+  - 真正关键的 planner 日志包括：
+    - `Using live joint state ...`
+    - `Solving two-stage algorithm target...`
+    - `Algorithm solved...`
+    - `Planning stage1...`
+    - `Stage1 planning succeeded.`
+    - `Planning stage2...`
+    - `Stage2 planning succeeded.`
 
 ---
 

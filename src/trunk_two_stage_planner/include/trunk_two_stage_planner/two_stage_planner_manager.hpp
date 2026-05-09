@@ -35,9 +35,9 @@ struct TwoStageSystemConfig
   std::string stage1_group_name = "stage1_group";
   std::string stage2_group_name = "stage2_group";
   std::string planning_frame = "chassis_base_link";
-  std::string marker_topic = "/two_stage_debug_markers";
-  std::string display_trajectory_topic = "/display_planned_path";
-  std::string joint_trajectory_topic = "/two_stage_joint_trajectory";
+  std::string marker_topic = "two_stage_debug_markers";
+  std::string display_trajectory_topic = "display_planned_path";
+  std::string joint_trajectory_topic = "two_stage_joint_trajectory";
 
   double planning_time = 5.0;
   int planning_attempts = 5;
@@ -59,14 +59,18 @@ struct TwoStageSystemConfig
   bool use_live_joint_state_as_start = true;
   bool allow_start_state_fallback_to_config = true;
   double live_start_state_wait_sec = 2.0;
-  std::string joint_states_topic = "/joint_states";
+  std::string joint_states_topic = "joint_states";
+  std::vector<std::string> expected_joint_names{
+    "trunk_joint1", "trunk_joint2", "trunk_joint3", "trunk_joint4" };
+  bool strict_joint_states = true;
+  bool warn_unknown_joints = true;
   bool execute_joint_trajectory = true;
-  std::string follow_joint_trajectory_action = "/trunk_group_controller/follow_joint_trajectory";
+  std::string follow_joint_trajectory_action = "trunk_group_controller/follow_joint_trajectory";
   double execute_action_server_wait_sec = 5.0;
   double execute_result_wait_sec = 30.0;
 
-  bool export_csv = true;
-  std::string output_dir = "/home/wxl/ws_moveit2/csv/two_stage_system";
+  bool export_csv = false;
+  std::string output_dir = "csv/two_stage_system";
 };
 
 /**
@@ -96,6 +100,8 @@ public:
   bool initialize(const PlannerConfig& algorithm_config, const TwoStageSystemConfig& system_config);
   /// 端到端执行：算法求解 + MoveIt 两阶段规划 + 可视化/导出。
   bool planTwoStageToTarget(const geometry_msgs::msg::Pose& target_pose);
+  /// 端到端执行，并返回明确失败原因与算法诊断摘要。
+  PlannerResult planTwoStageToTargetDetailed(const geometry_msgs::msg::Pose& target_pose);
 
 private:
   moveit::core::RobotState buildRobotState(const std::vector<double>& q) const;

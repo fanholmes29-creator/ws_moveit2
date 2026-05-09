@@ -58,16 +58,28 @@ bool TwoStagePlanner::plan(
   const geometry_msgs::msg::Pose& target_pose,
   PlanningSummary& summary) const
 {
+  const PlannerResult result = planDetailed(q_start, target_pose);
+  summary = result.summary;
+  return result.success;
+}
+
+PlannerResult TwoStagePlanner::planDetailed(
+  const std::vector<double>& q_start,
+  const geometry_msgs::msg::Pose& target_pose) const
+{
   // 文件职责：
   // 纯算法流水线（不发起 MoveIt 规划请求）。
   // 产出阶段边界状态与诊断数据，供 manager/导出模块消费。
-  summary = PlanningSummary();
+  PlanningSummary summary;
   summary.q_start = q_start;
 
   bool used_fallback_goal = false;
   std::vector<double> q_goal_ik;
   if (!solveFinalIK(q_start, target_pose, q_goal_ik, used_fallback_goal)) {
-    return false;
+    return PlannerResult::fail(
+      PlannerError::IkFailed,
+      "Failed to solve final IK for target pose.",
+      summary);
   }
   summary.q_goal_ik = q_goal_ik;
   summary.used_fallback_goal = used_fallback_goal;
@@ -87,7 +99,10 @@ bool TwoStagePlanner::plan(
   Stage1SearchResult search_result;
   if (!searchStage1PreparatoryState(
         q_start, summary.p_d_proj_goal_axis, summary.p_d, q_d, search_result)) {
-    return false;
+    return PlannerResult::fail(
+      PlannerError::Stage1SearchFailed,
+      "Failed to find a valid stage1 preparatory state.",
+      summary);
   }
 
   summary.q_pre = search_result.q_pre;
@@ -125,11 +140,14 @@ bool TwoStagePlanner::plan(
         q_goal_stage2,
         summary.stage2_position_error,
         summary.stage2_orientation_error_deg)) {
-    return false;
+    return PlannerResult::fail(
+      PlannerError::Stage2OptimizationFailed,
+      "Failed to optimize stage2 target with locked q1/q2.",
+      summary);
   }
   summary.q_goal_stage2 = q_goal_stage2;
   summary.delta_stage2_used = subtractVectors(q_goal_stage2, summary.q_pre);
-  return true;
+  return PlannerResult::ok(summary);
 }
 
 bool TwoStagePlanner::solveFinalIK(

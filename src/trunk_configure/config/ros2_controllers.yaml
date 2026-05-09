@@ -1,6 +1,6 @@
-controller_manager:
+/**/controller_manager:
   ros__parameters:
-    update_rate: 100
+    update_rate: 100 # Hz
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -8,7 +8,7 @@ controller_manager:
     trunk_group_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-trunk_group_controller:
+/**/trunk_group_controller:
   ros__parameters:
     joints:
       - trunk_joint1

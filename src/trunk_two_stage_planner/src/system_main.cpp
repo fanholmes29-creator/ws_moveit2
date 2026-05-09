@@ -52,6 +52,14 @@ void declareIfMissingDoubleArray(
   }
 }
 
+void declareIfMissingStringArray(
+  const rclcpp::Node::SharedPtr& node, const std::string& name, const std::vector<std::string>& value)
+{
+  if (!node->has_parameter(name)) {
+    node->declare_parameter<std::vector<std::string>>(name, value);
+  }
+}
+
 PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
 {
   // 该加载器定义算法层“参数契约”：
@@ -182,6 +190,9 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
     config.allow_start_state_fallback_to_config);
   declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
   declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
+  declareIfMissingStringArray(node, "expected_joint_names", config.expected_joint_names);
+  declareIfMissingBool(node, "strict_joint_states", config.strict_joint_states);
+  declareIfMissingBool(node, "warn_unknown_joints", config.warn_unknown_joints);
   declareIfMissingBool(node, "execute_joint_trajectory", config.execute_joint_trajectory);
   declareIfMissingString(
     node, "follow_joint_trajectory_action", config.follow_joint_trajectory_action);
@@ -216,6 +227,9 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
     node->get_parameter("allow_start_state_fallback_to_config").as_bool();
   config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
   config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
+  config.expected_joint_names = node->get_parameter("expected_joint_names").as_string_array();
+  config.strict_joint_states = node->get_parameter("strict_joint_states").as_bool();
+  config.warn_unknown_joints = node->get_parameter("warn_unknown_joints").as_bool();
   config.execute_joint_trajectory = node->get_parameter("execute_joint_trajectory").as_bool();
   config.follow_joint_trajectory_action =
     node->get_parameter("follow_joint_trajectory_action").as_string();

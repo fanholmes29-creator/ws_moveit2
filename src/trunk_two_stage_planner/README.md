@@ -91,7 +91,7 @@
 
 起点本质上是关节状态 `q_start`，当前优先级为：
 
-1. 实时 `/joint_states`
+1. 实时 `joint_states`（默认解析为 `/trunk_robot/joint_states`）
 2. 配置文件中的 `q_start`（仅在允许回退时）
 
 #### 2. 目标输入
@@ -115,7 +115,9 @@
 注意：
 
 - 当前主系统默认是“规划 + 显示 + 导出”
-- **不会自动执行到底层 ros2_control**
+- 规划成功后一定会发布完整 `JointTrajectory`
+- 是否继续发送 `FollowJointTrajectory` goal 由 `execute_joint_trajectory` 控制
+- 接入真实硬件时，控制器安全策略与硬件闭环仍需单独联调验证
 
 ---
 
@@ -131,13 +133,19 @@
 
 则系统会：
 
-1. 订阅 `joint_states_topic`（默认 `/joint_states`）
-2. 按 trunk 四个关节名重排得到当前关节状态
+1. 订阅 `joint_states_topic`（默认 `joint_states`，随 `robot_namespace` 解析）
+2. 按 `expected_joint_names` 校验并重排得到当前关节状态
 3. 在 `live_start_state_wait_sec` 时间内等待有效状态
 4. 若成功收到，则使用实时关节状态作为本次规划起点
 5. 若未收到：
    - `allow_start_state_fallback_to_config: true` -> 回退到配置 `q_start`
    - `allow_start_state_fallback_to_config: false` -> 直接报错退出
+
+实时起点会额外执行 joint state 安全校验：
+
+- `strict_joint_states: true`：`JointState.name` 必须与 `expected_joint_names` 完全一致；缺少期望关节或包含未知关节都会拒绝该消息
+- `strict_joint_states: false`：只要求包含所有 `expected_joint_names`；若包含未知关节且 `warn_unknown_joints: true`，会打印 warning 但仍使用期望关节
+- 任何期望关节位置为 `NaN/Inf`，或 `name/position` 长度不一致，都会拒绝该消息
 
 若：
 
@@ -209,7 +217,7 @@
 flowchart TD
     A[系统启动] --> B[读取算法配置与系统配置]
     B --> C{是否启用实时起点}
-    C -- 是 --> D[订阅 /joint_states]
+    C -- 是 --> D[订阅 namespace 内 joint_states]
     D --> E{在等待时间内是否收到有效关节状态}
     E -- 是 --> F[使用实时 q_start]
     E -- 否 --> G{是否允许回退到配置 q_start}
@@ -351,7 +359,7 @@ J_{\text{ik}}
 ### 已实现
 
 - 目标位姿 `T_d` 到最终 IK 解 `q_goal_ik` 的求解
-- 基于 `/joint_states` 的实时起点读取（可选回退到配置 `q_start`）
+- 基于 namespace 内 `joint_states` 的实时起点读取（可选回退到配置 `q_start`）
 - 第一阶段候选预备态 `q_pre` 搜索
 - 第二阶段完整位姿恢复性验证
 - `stage1_group / stage2_group` 两阶段 MoveIt 规划调度
@@ -366,7 +374,7 @@ J_{\text{ik}}
 
 - `stage1_group` / `stage2_group` 不是物理上拆开的链，只是工程入口分组
 - `q3 = q1 + q2` 没有在 MoveIt 中实现为原生硬约束，而是由算法层用于候选构造
-- 当前起点虽然已经可优先来自实时 `/joint_states`，但仍默认以关节状态作为上层规划起点，而不是单独基于“当前末端位姿”直接起算
+- 当前起点虽然已经可优先来自实时 `joint_states`，但仍默认以关节状态作为上层规划起点，而不是单独基于“当前末端位姿”直接起算
 - 第一阶段还不是完整的一阶段连续笛卡尔过程约束优化器
 - 第一阶段当前采用的是工程近似：
   - 先由算法层求 `q_pre`
@@ -531,10 +539,12 @@ ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py
 
 说明：
 
-- 系统启动后，会优先从 `/joint_states` 读取当前 trunk 关节状态作为规划起点。
+- 默认整套 trunk 系统会启动在 `/trunk_robot` namespace 下。
+- 系统启动后，会优先从 `/trunk_robot/joint_states` 读取当前 trunk 关节状态作为规划起点。
 - 如果在 `live_start_state_wait_sec` 时间内未收到有效状态，可按配置决定：
   - 回退到 `q_start`
   - 或直接报错退出
+- 如需更换 namespace，可追加 `robot_namespace:=my_trunk`。
 
 ### 无界面调试
 
@@ -561,7 +571,7 @@ ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py service_
 
 说明：
 
-- Service 模式与普通系统模式一样，会优先使用实时 `/joint_states` 作为起点。
+- Service 模式与普通系统模式一样，会优先使用 namespace 内的实时 `joint_states` 作为起点。
 - 上层只负责提供目标位姿；当前起点由系统内部读取当前关节状态。
 
 ### 轨迹输出与执行模式
@@ -573,11 +583,47 @@ ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py service_
 
 默认输出 topic：
 
-- `/two_stage_joint_trajectory`
+- `/trunk_robot/two_stage_joint_trajectory`
 
 默认 action：
 
-- `/trunk_group_controller/follow_joint_trajectory`
+- `/trunk_robot/trunk_group_controller/follow_joint_trajectory`
+
+说明：
+
+- 配置文件里推荐保持相对名，例如 `joint_trajectory_topic: "two_stage_joint_trajectory"`。
+- launch 默认设置 `robot_namespace:=trunk_robot` 后，运行时会解析为 `/trunk_robot/two_stage_joint_trajectory`。
+- 自定义 namespace 时，运行时 topic/action 会随 namespace 改变。
+
+## Multi-Robot ROS2 Network Safety
+
+在公司多机器人 ROS2 网络中，不建议长期依赖全局 `/joint_states`。如果其他机器人或机构也发布同名全局话题，MoveIt 或规划器可能收到混合的 joint state。
+
+短期建议为当前终端使用独立 `ROS_DOMAIN_ID`：
+
+```bash
+export ROS_DOMAIN_ID=42
+source /opt/ros/humble/setup.bash
+source ~/ws_moveit2/install/setup.bash
+ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py
+```
+
+当前 launch 默认已经把 trunk demo 栈、planner、service 和 RViz 放入私有 namespace：
+
+- 默认 namespace：`/trunk_robot`
+- trunk joint state：`/trunk_robot/joint_states`
+- controller action：`/trunk_robot/trunk_group_controller/follow_joint_trajectory`
+- service：`/trunk_robot/two_stage_planner/plan_to_pose`
+
+内部配置使用相对名，例如 `joint_states_topic: "joint_states"`。这样当 launch 设置 `robot_namespace:=trunk_robot` 时，ROS2 会自动解析到 `/trunk_robot/joint_states`，不会订阅全局 `/joint_states`。
+
+当前系统提供 joint state 输入保护：
+
+- `expected_joint_names` 指定本规划器只接受的 trunk 关节集合
+- `strict_joint_states: true` 时，`JointState.name` 必须与 `expected_joint_names` 完全一致
+- `strict_joint_states: false` 时，只要求包含所有期望关节；若存在未知关节且 `warn_unknown_joints: true`，系统会报警但继续使用期望关节
+
+默认 `strict_joint_states=true`，可防止混合 joint state 被误用为规划起点。namespace 隔离解决“收到别人的 topic”，strict 检查解决“收到内容不符合 trunk 模型”的二次保护。
 
 ### 离线分析工具
 
@@ -595,7 +641,7 @@ ros2 run trunk_two_stage_planner two_stage_planner_analysis_tool \
 
 Service 名称：
 
-- `/two_stage_planner/plan_to_pose`
+- `/trunk_robot/two_stage_planner/plan_to_pose`
 
 接口类型：
 
@@ -604,7 +650,7 @@ Service 名称：
 #### 1. 使用本地默认目标
 
 ```bash
-ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/PlanToPose \
+ros2 service call /trunk_robot/two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/PlanToPose \
 "{use_external_target: false}"
 ```
 
@@ -614,12 +660,12 @@ ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/Pl
 - 回退到本地参数配置的目标逻辑：
   - 若 `use_goal_state_as_target_pose: true`，则使用 `goal_joint_target` 做 FK
   - 否则使用 `target_position/target_orientation`
-- 规划起点仍优先来自实时 `/joint_states`
+- 规划起点仍优先来自 namespace 内实时 `joint_states`
 
 #### 2. 使用外部位姿
 
 ```bash
-ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/PlanToPose \
+ros2 service call /trunk_robot/two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/PlanToPose \
 "{use_external_target: true, target_position: [0.196101, 0.0, 0.602433], target_orientation: [-0.014919, -0.098712, 0.148692, 0.983831]}"
 ```
 
@@ -635,11 +681,18 @@ ros2 service call /two_stage_planner/plan_to_pose trunk_two_stage_planner/srv/Pl
 服务响应会返回：
 
 - `success`
+- `error_code`
 - `message`
 - `used_target_pose`
 - `used_external_target`
 
-这可以帮助你确认本次规划到底用了外部位姿还是本地默认位姿。
+当 `success=false` 时，`error_code` 对应内部 `PlannerError` 枚举值，`message` 会带有失败类型前缀，便于上层区分失败发生在哪一段，例如：
+
+- `[IkFailed] Failed to solve final IK for target pose.`
+- `[Stage1MoveItPlanningFailed] Stage1 MoveIt planning failed.`
+- `[StartStateUnavailable] Failed to acquire live joint state and start-state fallback is disabled.`
+
+`used_target_pose` 和 `used_external_target` 可以帮助你确认本次规划到底用了外部位姿还是本地默认位姿。
 
 ### 上层模拟客户端（example）
 
@@ -664,9 +717,18 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 脚本输出会打印：
 
 - `success`
+- `error_code`
 - `message`
 - `used_external_target`
 - 实际使用的目标位姿
+
+如果启动时改了 namespace，例如 `robot_namespace:=my_trunk`，示例客户端也要指定对应 service：
+
+```bash
+ros2 run trunk_two_stage_planner example_plan_to_pose_client \
+  --service-name /my_trunk/two_stage_planner/plan_to_pose \
+  --use-default
+```
 
 ---
 
@@ -678,7 +740,7 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 
 系统会发布：
 
-- topic：`/two_stage_joint_trajectory`
+- topic：`/trunk_robot/two_stage_joint_trajectory`
 - 类型：`trajectory_msgs/msg/JointTrajectory`
 
 这条消息适合：
@@ -691,7 +753,7 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 
 如果配置里开启了执行开关，系统会进一步把上面的完整轨迹作为 action goal 发给：
 
-- `/trunk_group_controller/follow_joint_trajectory`
+- `/trunk_robot/trunk_group_controller/follow_joint_trajectory`
 
 类型：
 
@@ -733,6 +795,292 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 - 默认底层是 FakeSystem / mock controller
 - 真正接入实物时，还需要底层控制器和硬件侧完成联调
 - 当前 README 中的“执行成功”应理解为控制器接口级成功，不等同于真实物理系统闭环性能完全验证
+
+---
+
+## 手柄联调最小流程（已验证）
+
+本节记录当前已经在本工程中验证通过的手柄联调路径，目标是以最少步骤稳定复现：
+
+- 手柄控制 `joystick_joint_teleop`
+- 通过 `FollowJointTrajectory` 驱动 trunk 关节
+- RViz 中看到 trunk 模型随关节状态变化
+
+> 说明：本节是“运行手册”，优先保证可复现。后续设计演进仍以“手柄控制说明书（设计稿）”为准。
+
+### 1. 运行前约束
+
+所有终端必须使用相同环境，否则会出现“节点互相看不见”“action/server 为 0”等问题：
+
+```bash
+source ~/ws_moveit2/install/setup.bash
+export ROS_DOMAIN_ID=77
+export ROS_LOCALHOST_ONLY=1
+```
+
+建议联调前先清理历史进程与 daemon：
+
+```bash
+pkill -f ros2 || true
+ros2 daemon stop
+ros2 daemon start
+```
+
+### 2. 两终端启动顺序（最小可用）
+
+终端 1：启动控制栈（FakeSystem + controller）
+
+```bash
+source ~/ws_moveit2/install/setup.bash
+export ROS_DOMAIN_ID=77
+export ROS_LOCALHOST_ONLY=1
+ros2 launch trunk_configure demo.launch.py use_rviz:=false
+```
+
+终端 2：启动手柄 + teleop + RViz
+
+```bash
+source ~/ws_moveit2/install/setup.bash
+export ROS_DOMAIN_ID=77
+export ROS_LOCALHOST_ONLY=1
+ros2 launch trunk_two_stage_planner joystick_joint_teleop_rviz.launch.py start_joy_node:=true log_level:=info
+```
+
+### 3. 当前已验证参数基线
+
+`config/joystick_joint_teleop.yaml` 当前联调基线：
+
+- `joy_topic: "/trunk_robot/joy"`
+- `joint_states_topic: "/joint_states"`
+- `follow_joint_trajectory_action: "/trunk_group_controller/follow_joint_trajectory"`
+- `button_a: 0`
+- `button_b: 1`
+- `button_x: 3`
+- `button_y: 4`
+- `button_l1: 6`
+- `axis_step: 1`
+- `axis_step_threshold: 0.5`
+- `invert_axis_step: false`
+
+控制规则（第一版）：
+
+- 按住 `L1` 才允许选关节和发送运动
+- `A/B/X/Y` 选择 `trunk_joint1..4`
+- 左摇杆上下（`axis_step`）触发单步正/反向
+- 采用 rising-edge 触发，长按摇杆不会连续发送 goal
+
+### 4. 三条健康检查命令（验收标准）
+
+```bash
+ros2 action info /trunk_group_controller/follow_joint_trajectory
+ros2 topic info /joint_states -v
+ros2 topic info /trunk_robot/joy -v
+```
+
+期望结果：
+
+- `Action servers: 1`
+- `/joint_states` 的 `Publisher count >= 1`
+- `/trunk_robot/joy` 的 `Publisher count = 1`（避免多个 joy_node 同时发布）
+
+### 5. 常见故障对照
+
+- `Cannot send goal before receiving valid joint states.`  
+  -> `joint_states_topic` 无有效发布，或消息中缺少 `trunk_joint1..4`
+- `Action server '...follow_joint_trajectory' is not available; skipping goal.`  
+  -> `trunk_group_controller` 未激活，或 `follow_joint_trajectory_action` 名称不匹配
+- `xmlrpc.client.Fault: ... !rclpy.ok()`  
+  -> CLI daemon 异常，执行 `ros2 daemon stop && ros2 daemon start`，必要时使用 `ros2 --no-daemon ...`
+- `/trunk_robot/joy` Publisher count > 1  
+  -> 重复启动了 `joy_node`，可能导致 deadman/轴值被互相覆盖
+
+---
+
+## 手柄控制说明书（设计稿）
+
+本节用于定义后续手柄控制功能的实现边界和操作规则。当前建议先实现**关节空间控制**，在 RViz / FakeSystem 中验证稳定后，再扩展到真实机器人和笛卡尔空间控制。
+
+### 1. 功能目标
+
+手柄控制功能用于通过游戏手柄控制 trunk 机器人运动：
+
+- 第一阶段：实现关节空间控制，由手柄选择关节并产生关节增量。
+- 第二阶段：扩展摇杆连续控制，提高操作流畅性。
+- 第三阶段：扩展笛卡尔空间控制，由手柄产生末端目标位姿，再交给两阶段规划器。
+
+核心原则：
+
+- 关节空间模式下，手柄直接生成 `q_target`，再发送 `FollowJointTrajectory` action。
+- 笛卡尔空间模式下，手柄生成 `target_pose`，再调用两阶段规划 service。
+- 手柄输入层不直接写进算法层，避免把硬件输入逻辑污染到 `TwoStagePlanner`。
+
+### 2. 控制模式划分
+
+| 模式 | 手柄输入含义 | 系统生成 | 是否走两阶段算法 | 输出接口 |
+|---|---|---|---|---|
+| 关节空间模式 | 关节选择 + 关节增量 `delta_q` | `q_target` | 否 | `FollowJointTrajectory` action |
+| 笛卡尔空间模式 | 末端位姿增量 `delta_pose` | `target_pose` | 是 | `PlanToPose` service |
+
+第一版只实现关节空间模式。笛卡尔空间模式等关节控制稳定后再做。
+
+### 3. 关节空间控制流程
+
+关节空间控制不需要 IK，也不需要 `q_pre` 搜索。它的目标是直接把当前关节状态移动到新的关节目标。
+
+```text
+手柄输入
+  ↓
+检查 deadman 安全键
+  ↓
+读取 /trunk_robot/joint_states 得到 q_current
+  ↓
+根据按键或摇杆生成 delta_q
+  ↓
+q_target = q_current + delta_q
+  ↓
+执行关节限位 / 速度限制 / 步长限制
+  ↓
+构造 trajectory_msgs/msg/JointTrajectory
+  ↓
+发送到 /trunk_robot/trunk_group_controller/follow_joint_trajectory
+```
+
+### 4. 推荐 ROS 接口
+
+| 类型 | 接口 |
+|---|---|
+| 手柄输入 | `/trunk_robot/joy` |
+| 当前关节状态 | `/trunk_robot/joint_states` |
+| 关节空间执行 | `/trunk_robot/trunk_group_controller/follow_joint_trajectory` |
+| 后续笛卡尔规划 | `/trunk_robot/two_stage_planner/plan_to_pose` |
+
+建议新增一个独立节点，例如：
+
+- `joystick_joint_teleop`
+
+该节点负责订阅 `Joy` 和 `JointState`，并向 controller action 发送短时 `JointTrajectory`。
+
+### 5. 第一版操作规则：按键单步控制
+
+第一版建议使用“组合键选择关节 + 单步增量”的方式，原因是安全、明确、容易调试。
+
+| 操作 | 功能 |
+|---|---|
+| 按住 `L1` | deadman，使能运动 |
+| 松开 `L1` | 停止发送运动目标 |
+| `L1 + A` | 选择 `trunk_joint1` |
+| `L1 + B` | 选择 `trunk_joint2` |
+| `L1 + X` | 选择 `trunk_joint3` |
+| `L1 + Y` | 选择 `trunk_joint4` |
+| `L1 + DPad Up` | 当前选中关节正向转动一步 |
+| `L1 + DPad Down` | 当前选中关节反向转动一步 |
+
+建议初始参数：
+
+| 参数 | 建议初值 |
+|---|---|
+| 单步角度 | `2 deg`，约 `0.0349 rad` |
+| 单步执行时间 | `0.5 s` |
+| joy 超时时间 | `0.5 s` |
+| deadman | 必须开启 |
+
+单步目标计算方式：
+
+```text
+q_target = q_current
+q_target[selected_joint] += direction * step_rad
+q_target = clamp(q_target, joint_limits)
+```
+
+然后生成一条单点轨迹：
+
+```text
+joint_names:
+  - trunk_joint1
+  - trunk_joint2
+  - trunk_joint3
+  - trunk_joint4
+
+points[0].positions = q_target
+points[0].time_from_start = 0.5 s
+```
+
+### 6. 第二版操作规则：摇杆连续控制
+
+第二版再加入摇杆连续控制：
+
+| 操作 | 功能 |
+|---|---|
+| 按住 `L1` + 右摇杆上下 | 当前选中关节连续正/反向运动 |
+
+建议计算方式：
+
+```text
+control_period = 0.1 s
+max_velocity = 5 deg/s
+delta_q = axis_value * max_velocity * control_period
+q_target = q_current + delta_q
+```
+
+连续控制要注意：
+
+- 不要无限频率发送 action goal，建议先限制在 `5-10 Hz`。
+- 如果上一条 action 未完成，第一版可以选择不发新 goal。
+- 后续如果要更丝滑，再考虑速度控制或专门的 jog 接口。
+
+### 7. 后续笛卡尔空间控制
+
+笛卡尔空间模式下，手柄不直接给 `q_target`，而是给末端位姿增量：
+
+```text
+手柄输入
+  ↓
+根据当前末端位姿生成 target_pose
+  ↓
+调用 /trunk_robot/two_stage_planner/plan_to_pose
+  ↓
+TwoStagePlanner 求解 q_goal_ik / q_pre / q_goal_stage2
+  ↓
+TwoStagePlannerManager 生成并执行两阶段轨迹
+```
+
+因此：
+
+- 关节空间模式：手柄生成 `q_target`，直接走 controller。
+- 笛卡尔空间模式：手柄生成 `target_pose`，走两阶段规划算法。
+
+### 8. 安全策略
+
+真实机器人上必须满足以下安全要求：
+
+- 未按住 deadman 时，不发送任何运动目标。
+- joy 超时后，不再发送运动目标。
+- 每次目标都必须检查 joint limit。
+- 每次目标都必须限制单步角度和最大速度。
+- controller action 不可用时，必须拒绝运动。
+- 松开 deadman 后，应保持当前位置或停止继续发送目标。
+- 初次上真实机器人时，应先降低 `step_rad` 和 `max_velocity`。
+- 急停和硬件安全链路必须由底层系统兜底，手柄节点不能替代硬件安全。
+
+### 9. 推荐实现顺序
+
+1. 先接入 `joy_node`，确认 `/trunk_robot/joy` 有手柄数据。
+2. 实现 `joystick_joint_teleop`，只支持关节空间单步控制。
+3. 在 RViz / FakeSystem 中验证四个关节都能独立动作。
+4. 加入摇杆连续控制。
+5. 接真实 controller 前降低速度和步长。
+6. 最后实现笛卡尔空间模式，复用 `PlanToPose` service。
+
+第一版验收标准：
+
+- `/trunk_robot/joy` 能正常输出手柄数据。
+- 按住 deadman 才能运动。
+- 松开 deadman 不再发送运动。
+- 可以选择 `trunk_joint1..4`。
+- 每次按键只移动固定小角度。
+- `/trunk_robot/joint_states` 随控制结果更新。
+- RViz 中模型随关节运动变化。
+- 不影响原有 `two_stage_planner_system` 和 `two_stage_planner_service`。
 
 ---
 
@@ -817,6 +1165,14 @@ ros2 run trunk_two_stage_planner ik_joint_from_pose \
 - 两阶段切换是否清楚
 - 第二阶段是否是在 stage1 终点的基础上恢复
 
+运行时实际 topic 默认是：
+
+- `/trunk_robot/display_planned_path`
+- `/trunk_robot/two_stage_debug_markers`
+- `/trunk_robot/two_stage_joint_trajectory`
+
+如果 RViz 中看不到轨迹或 marker，可以先检查这些 topic 是否有 publisher/subscriber。
+
 ---
 
 ## 关键输出与调试文件
@@ -834,12 +1190,45 @@ ros2 run trunk_two_stage_planner ik_joint_from_pose \
 
 这些文件默认输出到：
 
-- 系统版：`/home/wxl/ws_moveit2/csv/two_stage_system`
+- 系统版：`csv/two_stage_system`
 - 分析工具版：由 analysis tool 参数决定
 
 说明：
 
 - 若启用了实时起点，`summary.txt` 中的 `q_start` 表示本次规划实际读取到的当前关节状态，而不一定等于参数文件中的默认 `q_start`
+
+---
+
+## 规划过程日志与卡点定位
+
+启动时会看到一些 MoveIt / RViz / ros2_control 的噪声日志，例如：
+
+- `Using load_yaml() directly is deprecated`
+- `The root link chassis_base_link has an inertia specified`
+- `No 3D sensor plugin(s) defined for octomap updates`
+- RViz plugin factory namespace collision
+
+这些通常不是规划失败原因。排查规划主链路时，优先看 `[trunk_robot.two_stage_planner_system]` 日志。
+
+关键日志顺序通常是：
+
+1. `Using live joint state ...`
+2. `Solving two-stage algorithm target...`
+3. `Algorithm solved...`
+4. `Planning stage1 with MoveIt group 'stage1_group'...`
+5. `Connecting stage1 MoveGroupInterface to namespace '/trunk_robot'...`
+6. `Stage1 MoveGroupInterface connected.`
+7. `Stage1 computing Cartesian path ...`
+8. `Stage1 Cartesian fraction=...`
+9. `Stage1 planning succeeded.`
+10. `Planning stage2 with MoveIt group 'stage2_group'...`
+11. `Stage2 planning succeeded.`
+
+如果日志停在 `Planning stage1...` 附近：
+
+- 先确认 planner、move_group、joint state 都在 `/trunk_robot` namespace。
+- 再看是否已经打印 `Stage1 MoveGroupInterface connected.`。
+- 如果已经进入 Cartesian / OMPL 规划，再考虑调小采样数、放宽 stage1 约束或增大 `planning_time`。
 
 ---
 
@@ -853,6 +1242,8 @@ ros2 run trunk_two_stage_planner ik_joint_from_pose \
 - 轨迹显示
 - marker 调试
 - 实时起点支持
+- namespace 隔离与 joint state 输入保护
+- 可选 `FollowJointTrajectory` action 执行
 - service / example / FK / IK 工具链
 
 但仍有明显增强空间：
@@ -862,7 +1253,7 @@ ros2 run trunk_two_stage_planner ik_joint_from_pose \
 3. 在 MoveIt 层面更严格表达 stage2 对 `q1 / q2` 的锁定或弱松弛
 4. 将 `q3 = q1 + q2` 从算法层近似推进到更强的工程约束表达
 5. 对 stage1 / stage2 误差收敛做更系统的参数整定
-6. 将规划结果与底层 `ros2_control` 执行层对接，形成完整闭环
+6. 完善真实硬件闭环验证、控制器安全策略与执行反馈处理
 
 ---
 

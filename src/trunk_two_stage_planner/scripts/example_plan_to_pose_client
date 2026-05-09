@@ -10,14 +10,15 @@ from trunk_two_stage_planner.srv import PlanToPose
 
 
 class ExamplePlanToPoseClient(Node):
-    def __init__(self) -> None:
+    def __init__(self, service_name: str) -> None:
         super().__init__("example_plan_to_pose_client")
         self._client = self.create_client(
-            PlanToPose, "/two_stage_planner/plan_to_pose"
+            PlanToPose, service_name
         )
+        self._service_name = service_name
 
     def wait_for_service(self) -> bool:
-        self.get_logger().info("Waiting for /two_stage_planner/plan_to_pose ...")
+        self.get_logger().info(f"Waiting for {self._service_name} ...")
         return self._client.wait_for_service(timeout_sec=10.0)
 
     def send_request(
@@ -39,7 +40,7 @@ class ExamplePlanToPoseClient(Node):
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Example upper-layer client for /two_stage_planner/plan_to_pose. "
+            "Example upper-layer client for a namespaced PlanToPose service. "
             "Use --use-default to trigger local default target, or provide both "
             "--position and --orientation to send an external pose."
         )
@@ -63,6 +64,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar=("QX", "QY", "QZ", "QW"),
         help="External target orientation quaternion as four floats.",
     )
+    parser.add_argument(
+        "--service-name",
+        default="/trunk_robot/two_stage_planner/plan_to_pose",
+        help="PlanToPose service name.",
+    )
     return parser
 
 
@@ -77,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     rclpy.init(args=None)
-    node = ExamplePlanToPoseClient()
+    node = ExamplePlanToPoseClient(args.service_name)
     try:
         if not node.wait_for_service():
             node.get_logger().error("Service not available within timeout.")
@@ -99,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         print(f"success: {response.success}")
+        print(f"error_code: {response.error_code}")
         print(f"message: {response.message}")
         print(f"used_external_target: {response.used_external_target}")
         pose = response.used_target_pose

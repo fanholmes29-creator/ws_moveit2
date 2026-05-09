@@ -3,6 +3,7 @@ float64[3] target_position
 float64[4] target_orientation
 ---
 bool success
+int32 error_code
 string message
 geometry_msgs/Pose used_target_pose
 bool used_external_target

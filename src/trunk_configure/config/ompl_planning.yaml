@@ -136,6 +136,7 @@ planner_configs:
     dense_delta_fraction: 0.001
     max_failures: 5000
 trunk_group:
+  default_planner_config: RRTConnectkConfigDefault
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault
@@ -161,6 +162,7 @@ trunk_group:
     - SPARSkConfigDefault
     - SPARStwokConfigDefault
 stage1_group:
+  default_planner_config: RRTConnectkConfigDefault
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault
@@ -186,6 +188,7 @@ stage1_group:
     - SPARSkConfigDefault
     - SPARStwokConfigDefault
 stage2_group:
+  default_planner_config: RRTConnectkConfigDefault
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault

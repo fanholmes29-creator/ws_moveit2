@@ -1,4 +1,4 @@
-two_stage_planner_system:
+/**:
   ros__parameters:
     # 机器人模型与语义模型来源。
     robot_description_package: "robot_model"
@@ -20,7 +20,7 @@ two_stage_planner_system:
     planning_frame: "chassis_base_link"
 
     q_start: [0.4, 0.4, 0.4, 0.4]
-    goal_joint_target: [-1.0, 1.5, 0.7, 0.6]
+    goal_joint_target: [-1.0, 1.0, 0.7, 0.6]
     q_goal_fallback: [-1.0, 1.5, 0.7, 0.6]
     # 目标策略开关：
     # true -> 由 goal_joint_target 的 FK 推导目标位姿
@@ -60,7 +60,7 @@ two_stage_planner_system:
     stage1_duration: 2.0
     stage2_duration: 2.5
     dt: 0.02
-    output_dir: "/home/wxl/ws_moveit2/csv/two_stage_system"
+    output_dir: "csv/two_stage_system"
 
     # MoveIt 规划行为调节项。
     planning_time: 5.0
@@ -84,13 +84,20 @@ two_stage_planner_system:
     use_live_joint_state_as_start: true
     allow_start_state_fallback_to_config: true
     live_start_state_wait_sec: 4.0
-    joint_states_topic: "/joint_states"
+    joint_states_topic: "joint_states"
+    expected_joint_names:
+      - trunk_joint1
+      - trunk_joint2
+      - trunk_joint3
+      - trunk_joint4
+    strict_joint_states: true
+    warn_unknown_joints: true
     execute_joint_trajectory: true
-    follow_joint_trajectory_action: "/trunk_group_controller/follow_joint_trajectory"
+    follow_joint_trajectory_action: "trunk_group_controller/follow_joint_trajectory"
     execute_action_server_wait_sec: 5.0
     execute_result_wait_sec: 30.0
 
-    marker_topic: "/two_stage_debug_markers"
-    display_trajectory_topic: "/display_planned_path"
-    joint_trajectory_topic: "/two_stage_joint_trajectory"
+    marker_topic: "two_stage_debug_markers"
+    display_trajectory_topic: "display_planned_path"
+    joint_trajectory_topic: "two_stage_joint_trajectory"
     export_csv: true

@@ -13,6 +13,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -71,6 +72,10 @@ add_executable(ik_joint_from_pose
 
 add_executable(two_stage_planner_service
   src/two_stage_planner_service_main.cpp
+)
+
+add_executable(joystick_joint_teleop
+  src/joystick_joint_teleop.cpp
 )
 
 ament_target_dependencies(two_stage_planner_analysis_tool
@@ -181,6 +186,16 @@ target_compile_features(two_stage_planner_service PUBLIC cxx_std_17)
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(two_stage_planner_service "${cpp_typesupport_target}")
 
+ament_target_dependencies(joystick_joint_teleop
+  rclcpp
+  rclcpp_action
+  sensor_msgs
+  trajectory_msgs
+  control_msgs
+  builtin_interfaces
+)
+target_compile_features(joystick_joint_teleop PUBLIC cxx_std_17)
+
 install(DIRECTORY include/
   DESTINATION include
 )
@@ -192,6 +207,7 @@ install(TARGETS
   fk_pose_from_joint
   ik_joint_from_pose
   two_stage_planner_service
+  joystick_joint_teleop
   DESTINATION lib/${PROJECT_NAME}
 )
 

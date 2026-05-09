@@ -53,4 +53,4 @@ two_stage_planner_analysis_tool:
     stage2_duration: 3.0
     dt: 0.02
 
-    output_dir: "/home/wxl/ws_moveit2/csv/two_stage_kinematics"
+    output_dir: "csv/two_stage_kinematics"

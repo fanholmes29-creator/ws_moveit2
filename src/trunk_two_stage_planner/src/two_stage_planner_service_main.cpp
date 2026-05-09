@@ -56,6 +56,14 @@ void declareIfMissingDoubleArray(
   }
 }
 
+void declareIfMissingStringArray(
+  const rclcpp::Node::SharedPtr& node, const std::string& name, const std::vector<std::string>& value)
+{
+  if (!node->has_parameter(name)) {
+    node->declare_parameter<std::vector<std::string>>(name, value);
+  }
+}
+
 PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
 {
   PlannerConfig config;
@@ -163,6 +171,7 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingString(node, "planning_frame", config.planning_frame);
   declareIfMissingString(node, "marker_topic", config.marker_topic);
   declareIfMissingString(node, "display_trajectory_topic", config.display_trajectory_topic);
+  declareIfMissingString(node, "joint_trajectory_topic", config.joint_trajectory_topic);
   declareIfMissingDouble(node, "planning_time", config.planning_time);
   declareIfMissingInt(node, "planning_attempts", config.planning_attempts);
   declareIfMissingDouble(node, "velocity_scaling", config.velocity_scaling);
@@ -178,6 +187,22 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(node, "stage1_q4_tolerance", config.stage1_q4_tolerance);
   declareIfMissingDouble(node, "stage1_arc_height", config.stage1_arc_height);
   declareIfMissingDouble(node, "stage2_q12_tolerance", config.stage2_q12_tolerance);
+  declareIfMissingBool(node, "use_live_joint_state_as_start", config.use_live_joint_state_as_start);
+  declareIfMissingBool(
+    node,
+    "allow_start_state_fallback_to_config",
+    config.allow_start_state_fallback_to_config);
+  declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
+  declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
+  declareIfMissingStringArray(node, "expected_joint_names", config.expected_joint_names);
+  declareIfMissingBool(node, "strict_joint_states", config.strict_joint_states);
+  declareIfMissingBool(node, "warn_unknown_joints", config.warn_unknown_joints);
+  declareIfMissingBool(node, "execute_joint_trajectory", config.execute_joint_trajectory);
+  declareIfMissingString(
+    node, "follow_joint_trajectory_action", config.follow_joint_trajectory_action);
+  declareIfMissingDouble(
+    node, "execute_action_server_wait_sec", config.execute_action_server_wait_sec);
+  declareIfMissingDouble(node, "execute_result_wait_sec", config.execute_result_wait_sec);
   declareIfMissingBool(node, "export_csv", config.export_csv);
 
   config.stage1_group_name = node->get_parameter("stage1_group_name").as_string();
@@ -185,6 +210,7 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.planning_frame = node->get_parameter("planning_frame").as_string();
   config.marker_topic = node->get_parameter("marker_topic").as_string();
   config.display_trajectory_topic = node->get_parameter("display_trajectory_topic").as_string();
+  config.joint_trajectory_topic = node->get_parameter("joint_trajectory_topic").as_string();
   config.planning_time = node->get_parameter("planning_time").as_double();
   config.planning_attempts = node->get_parameter("planning_attempts").as_int();
   config.velocity_scaling = node->get_parameter("velocity_scaling").as_double();
@@ -200,6 +226,20 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.stage1_q4_tolerance = node->get_parameter("stage1_q4_tolerance").as_double();
   config.stage1_arc_height = node->get_parameter("stage1_arc_height").as_double();
   config.stage2_q12_tolerance = node->get_parameter("stage2_q12_tolerance").as_double();
+  config.use_live_joint_state_as_start = node->get_parameter("use_live_joint_state_as_start").as_bool();
+  config.allow_start_state_fallback_to_config =
+    node->get_parameter("allow_start_state_fallback_to_config").as_bool();
+  config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
+  config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
+  config.expected_joint_names = node->get_parameter("expected_joint_names").as_string_array();
+  config.strict_joint_states = node->get_parameter("strict_joint_states").as_bool();
+  config.warn_unknown_joints = node->get_parameter("warn_unknown_joints").as_bool();
+  config.execute_joint_trajectory = node->get_parameter("execute_joint_trajectory").as_bool();
+  config.follow_joint_trajectory_action =
+    node->get_parameter("follow_joint_trajectory_action").as_string();
+  config.execute_action_server_wait_sec =
+    node->get_parameter("execute_action_server_wait_sec").as_double();
+  config.execute_result_wait_sec = node->get_parameter("execute_result_wait_sec").as_double();
   config.export_csv = node->get_parameter("export_csv").as_bool();
   return config;
 }
@@ -257,7 +297,7 @@ public:
     }
 
     service_ = node_->create_service<trunk_two_stage_planner::srv::PlanToPose>(
-      "/two_stage_planner/plan_to_pose",
+      "two_stage_planner/plan_to_pose",
       std::bind(
         &TwoStagePlannerServiceNode::handlePlanToPose,
         this,
@@ -323,7 +363,9 @@ private:
     if (request->use_external_target) {
       if (!buildValidatedExternalPose(request, target_pose, error_message)) {
         response->success = false;
-        response->message = error_message;
+        response->error_code = static_cast<int32_t>(PlannerError::InvalidInput);
+        response->message =
+          std::string("[") + plannerErrorToString(PlannerError::InvalidInput) + "] " + error_message;
         response->used_target_pose = geometry_msgs::msg::Pose();
         response->used_external_target = true;
         return;
@@ -333,9 +375,12 @@ private:
       target_pose = buildDefaultTargetPose();
     }
 
-    const bool ok = manager_.planTwoStageToTarget(target_pose);
-    response->success = ok;
-    response->message = ok ? "Planning succeeded." : "Planning failed.";
+    const PlannerResult result = manager_.planTwoStageToTargetDetailed(target_pose);
+    response->success = result.success;
+    response->error_code = static_cast<int32_t>(result.error);
+    response->message = result.success ?
+      result.message :
+      std::string("[") + plannerErrorToString(result.error) + "] " + result.message;
     response->used_target_pose = target_pose;
     response->used_external_target = used_external;
   }
@@ -355,9 +400,8 @@ int main(int argc, char* argv[])
   rclcpp::init(argc, argv);
 
   try {
-    // Reuse the existing parameter root so current system params file can be passed directly.
     auto node = rclcpp::Node::make_shared(
-      "two_stage_planner_system",
+      "two_stage_planner_service",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
 
     trunk_two_stage_planner::TwoStagePlannerServiceNode service_node(node);
@@ -367,9 +411,13 @@ int main(int argc, char* argv[])
       return 1;
     }
 
+    std::string service_name = node->get_namespace();
+    if (service_name == "/") {
+      service_name.clear();
+    }
+    service_name += "/two_stage_planner/plan_to_pose";
     RCLCPP_INFO(
-      node->get_logger(),
-      "Two-stage planner service is ready at /two_stage_planner/plan_to_pose");
+      node->get_logger(), "Two-stage planner service is ready at %s", service_name.c_str());
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;

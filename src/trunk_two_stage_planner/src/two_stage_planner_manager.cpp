@@ -5,8 +5,10 @@
 #include <cmath>
 #include <filesystem>
 #include <cctype>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 
 #include <moveit/robot_state/conversions.h>
 #include <moveit/robot_trajectory/robot_trajectory.h>
@@ -22,6 +24,91 @@ namespace trunk_two_stage_planner
 
 namespace
 {
+
+std::string joinStrings(const std::vector<std::string>& values)
+{
+  std::ostringstream oss;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      oss << ", ";
+    }
+    oss << values[i];
+  }
+  return oss.str();
+}
+
+std::string joinDoubles(const std::vector<double>& values)
+{
+  std::ostringstream oss;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      oss << ", ";
+    }
+    oss << values[i];
+  }
+  return oss.str();
+}
+
+struct JointStateValidationResult
+{
+  bool accepted = false;
+  std::vector<double> positions;
+  std::vector<std::string> unknown_joints;
+  std::string reject_reason;
+};
+
+JointStateValidationResult validateJointStateMessage(
+  const sensor_msgs::msg::JointState& msg,
+  const std::vector<std::string>& expected_joint_names,
+  bool strict_joint_states)
+{
+  JointStateValidationResult result;
+
+  if (msg.name.size() != msg.position.size()) {
+    result.reject_reason =
+      "name/position size mismatch: " + std::to_string(msg.name.size()) + " vs " +
+      std::to_string(msg.position.size());
+    return result;
+  }
+
+  if (expected_joint_names.empty()) {
+    result.reject_reason = "expected_joint_names is empty";
+    return result;
+  }
+
+  std::unordered_set<std::string> expected_set(
+    expected_joint_names.begin(), expected_joint_names.end());
+  for (const auto& name : msg.name) {
+    if (expected_set.find(name) == expected_set.end()) {
+      result.unknown_joints.push_back(name);
+    }
+  }
+
+  if (strict_joint_states && !result.unknown_joints.empty()) {
+    result.reject_reason = "unknown joints in strict mode: " + joinStrings(result.unknown_joints);
+    return result;
+  }
+
+  result.positions.assign(expected_joint_names.size(), 0.0);
+  for (std::size_t i = 0; i < expected_joint_names.size(); ++i) {
+    const auto it = std::find(msg.name.begin(), msg.name.end(), expected_joint_names[i]);
+    if (it == msg.name.end()) {
+      result.reject_reason = "missing expected joint: " + expected_joint_names[i];
+      return result;
+    }
+
+    const std::size_t index = static_cast<std::size_t>(std::distance(msg.name.begin(), it));
+    const double value = msg.position[index];
+    if (!std::isfinite(value)) {
+      result.reject_reason = "non-finite position for joint: " + expected_joint_names[i];
+      return result;
+    }
+    result.positions[i] = value;
+  }
+
+  result.accepted = true;
+  return result;
+}
 
 Eigen::Quaterniond poseToEigenQuaternion(const geometry_msgs::msg::Pose& pose)
 {
@@ -164,6 +251,29 @@ bool TwoStagePlannerManager::initialize(
     return false;
   }
 
+  if (system_config_.expected_joint_names.empty()) {
+    RCLCPP_ERROR(node_->get_logger(), "expected_joint_names must not be empty.");
+    return false;
+  }
+  for (const auto& joint_name : system_config_.expected_joint_names) {
+    std::size_t joint_index = 0;
+    if (!kinematics_.getJointIndex(joint_name, joint_index)) {
+      RCLCPP_ERROR(
+        node_->get_logger(),
+        "Expected joint '%s' is not part of planning group '%s'.",
+        joint_name.c_str(),
+        algorithm_config_.group_name.c_str());
+      return false;
+    }
+  }
+  if (system_config_.expected_joint_names != kinematics_.getJointNames()) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "expected_joint_names order differs from planning group joint order. "
+      "Cached live start states will follow expected_joint_names order: [%s]",
+      joinStrings(system_config_.expected_joint_names).c_str());
+  }
+
   algorithm_ = std::make_unique<TwoStagePlanner>(kinematics_, algorithm_config_);
 
   auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
@@ -182,11 +292,24 @@ bool TwoStagePlannerManager::initialize(
 
 bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose& target_pose)
 {
+  return planTwoStageToTargetDetailed(target_pose).success;
+}
+
+PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
+  const geometry_msgs::msg::Pose& target_pose)
+{
   // 运行主链路：
   // 1) 算法层求解 q_pre 与 stage2 目标
   // 2) MoveIt 先规划 stage1，再规划 stage2
   // 3) 发布/导出 RViz 与调试输出
+  if (!algorithm_) {
+    return PlannerResult::fail(
+      PlannerError::NotInitialized,
+      "TwoStagePlannerManager is not initialized.");
+  }
+
   std::vector<double> q_start;
+  bool using_live_start = false;
   if (system_config_.use_live_joint_state_as_start) {
     const auto wait_deadline =
       std::chrono::steady_clock::now() +
@@ -202,38 +325,74 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
           "Failed to acquire live joint state from %s within %.2f s.",
           system_config_.joint_states_topic.c_str(),
           system_config_.live_start_state_wait_sec);
-        return false;
+        return PlannerResult::fail(
+          PlannerError::StartStateUnavailable,
+          "Failed to acquire live joint state and start-state fallback is disabled.");
       }
       q_start = algorithm_config_.q_start;
       RCLCPP_WARN(
         node_->get_logger(),
         "Live joint state unavailable on %s; falling back to configured q_start.",
         system_config_.joint_states_topic.c_str());
+    } else {
+      using_live_start = true;
     }
   } else {
     q_start = algorithm_config_.q_start;
   }
 
-  PlanningSummary summary;
-  if (!algorithm_->plan(q_start, target_pose, summary)) {
-    RCLCPP_ERROR(node_->get_logger(), "Algorithm layer failed to compute q_pre/q_goal.");
-    return false;
+  if (using_live_start) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Using live joint state from %s as planning start. strict_joint_states=%s, "
+      "expected_joint_names=[%s], q_start=[%s]",
+      system_config_.joint_states_topic.c_str(),
+      system_config_.strict_joint_states ? "true" : "false",
+      joinStrings(system_config_.expected_joint_names).c_str(),
+      joinDoubles(q_start).c_str());
   }
+
+  RCLCPP_INFO(node_->get_logger(), "Solving two-stage algorithm target...");
+  const PlannerResult algorithm_result = algorithm_->planDetailed(q_start, target_pose);
+  if (!algorithm_result.success) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Algorithm layer failed: [%s] %s",
+      plannerErrorToString(algorithm_result.error),
+      algorithm_result.message.c_str());
+    return algorithm_result;
+  }
+  PlanningSummary summary = algorithm_result.summary;
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Algorithm solved. q_pre=[%s], q_goal_stage2=[%s]",
+    joinDoubles(summary.q_pre).c_str(),
+    joinDoubles(summary.q_goal_stage2).c_str());
 
   moveit_msgs::msg::RobotTrajectory stage1_traj;
   moveit::planning_interface::MoveGroupInterface::Plan stage1_plan;
+  RCLCPP_INFO(node_->get_logger(), "Planning stage1 with MoveIt group '%s'...", system_config_.stage1_group_name.c_str());
   if (!planStage1(q_start, summary.q_pre, stage1_plan)) {
     RCLCPP_ERROR(node_->get_logger(), "Stage1 planning failed.");
-    return false;
+    return PlannerResult::fail(
+      PlannerError::Stage1MoveItPlanningFailed,
+      "Stage1 MoveIt planning failed.",
+      summary);
   }
   stage1_traj = stage1_plan.trajectory_;
+  RCLCPP_INFO(node_->get_logger(), "Stage1 planning succeeded.");
 
   const std::vector<double> q_stage1_end = extractJointPositionsFromTrajectory(stage1_traj);
   moveit::planning_interface::MoveGroupInterface::Plan stage2_plan;
+  RCLCPP_INFO(node_->get_logger(), "Planning stage2 with MoveIt group '%s'...", system_config_.stage2_group_name.c_str());
   if (!planStage2(q_stage1_end, summary.q_pre, summary.q_goal_stage2, stage2_plan)) {
     RCLCPP_ERROR(node_->get_logger(), "Stage2 planning failed.");
-    return false;
+    return PlannerResult::fail(
+      PlannerError::Stage2MoveItPlanningFailed,
+      "Stage2 MoveIt planning failed.",
+      summary);
   }
+  RCLCPP_INFO(node_->get_logger(), "Stage2 planning succeeded.");
 
   publishDisplayTrajectories(stage1_traj, stage2_plan.trajectory_, q_start);
   publishDebugMarkers(summary, stage1_traj, stage2_plan.trajectory_);
@@ -242,7 +401,10 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
   joint_traj_pub_->publish(merged_joint_trajectory);
   if (system_config_.execute_joint_trajectory && !executeJointTrajectory(merged_joint_trajectory)) {
     RCLCPP_ERROR(node_->get_logger(), "Failed to execute merged joint trajectory.");
-    return false;
+    return PlannerResult::fail(
+      PlannerError::TrajectoryExecutionFailed,
+      "Failed to execute merged joint trajectory.",
+      summary);
   }
 
   RCLCPP_INFO(node_->get_logger(), "===== Two-Stage Planning Summary =====");
@@ -294,7 +456,7 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
     exportStage1HeatmapCsv(system_config_.output_dir + "/stage1_heatmap.csv", summary.heatmap_samples);
   }
 
-  return true;
+  return PlannerResult::ok(summary);
 }
 
 moveit::core::RobotState TwoStagePlannerManager::buildRobotState(const std::vector<double>& q) const
@@ -334,15 +496,21 @@ bool TwoStagePlannerManager::planStage1(
   // 共享长生命周期客户端曾导致 action 目标响应冲突。
   auto stage1_node = rclcpp::Node::make_shared(
     "stage1_move_group_client",
+    node_->get_namespace(),
     rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(stage1_node);
   std::thread spinner([&executor]() { executor.spin(); });
 
   moveit::planning_interface::MoveGroupInterface::Options options(
-    system_config_.stage1_group_name, "robot_description");
+    system_config_.stage1_group_name, "robot_description", node_->get_namespace());
   options.robot_model_ = kinematics_.getRobotModel();
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Connecting stage1 MoveGroupInterface to namespace '%s'...",
+    node_->get_namespace());
   moveit::planning_interface::MoveGroupInterface stage1_group(stage1_node, options);
+  RCLCPP_INFO(node_->get_logger(), "Stage1 MoveGroupInterface connected.");
   stage1_group.setPlanningTime(system_config_.planning_time);
   stage1_group.setNumPlanningAttempts(system_config_.planning_attempts);
   stage1_group.setMaxVelocityScalingFactor(system_config_.velocity_scaling);
@@ -392,6 +560,10 @@ bool TwoStagePlannerManager::planStage1(
   if (system_config_.stage1_use_cartesian) {
     const auto waypoints = buildStage1CartesianWaypoints(q_start, q_pre);
     if (waypoints.size() >= 2) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "Stage1 computing Cartesian path with %zu waypoints...",
+        waypoints.size());
       stage1_group.setPathConstraints(constraints);
       moveit_msgs::msg::RobotTrajectory cart_traj;
       const double fraction = stage1_group.computeCartesianPath(
@@ -417,6 +589,11 @@ bool TwoStagePlannerManager::planStage1(
   }
 
   if (!ok) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Stage1 planning constrained joint target with planning_time=%.2f attempts=%d...",
+      system_config_.planning_time,
+      system_config_.planning_attempts);
     stage1_group.setJointValueTarget(q_pre);
     stage1_group.setPathConstraints(constraints);
     // 优先尝试带约束规划，以保持 stage1 姿态设计意图。
@@ -432,6 +609,7 @@ bool TwoStagePlannerManager::planStage1(
       node_->get_logger(),
       "Stage1 constrained planning failed. Falling back to unconstrained stage1_group planning.");
     moveit::planning_interface::MoveGroupInterface retry_group(stage1_node, options);
+    RCLCPP_INFO(node_->get_logger(), "Stage1 retry MoveGroupInterface connected.");
     retry_group.setPlanningTime(system_config_.planning_time);
     retry_group.setNumPlanningAttempts(system_config_.planning_attempts);
     retry_group.setMaxVelocityScalingFactor(system_config_.velocity_scaling);
@@ -456,15 +634,21 @@ bool TwoStagePlannerManager::planStage2(
   // stage2 强制阶段分离：q1/q2 保持接近 q_pre，由 q3/q4 完成目标位姿恢复。
   auto stage2_node = rclcpp::Node::make_shared(
     "stage2_move_group_client",
+    node_->get_namespace(),
     rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(stage2_node);
   std::thread spinner([&executor]() { executor.spin(); });
 
   moveit::planning_interface::MoveGroupInterface::Options options(
-    system_config_.stage2_group_name, "robot_description");
+    system_config_.stage2_group_name, "robot_description", node_->get_namespace());
   options.robot_model_ = kinematics_.getRobotModel();
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Connecting stage2 MoveGroupInterface to namespace '%s'...",
+    node_->get_namespace());
   moveit::planning_interface::MoveGroupInterface stage2_group(stage2_node, options);
+  RCLCPP_INFO(node_->get_logger(), "Stage2 MoveGroupInterface connected.");
   stage2_group.setPlanningTime(system_config_.planning_time);
   stage2_group.setNumPlanningAttempts(system_config_.planning_attempts);
   stage2_group.setMaxVelocityScalingFactor(system_config_.velocity_scaling);
@@ -497,6 +681,11 @@ bool TwoStagePlannerManager::planStage2(
 
   stage2_group.setPathConstraints(constraints);
   stage2_group.setJointValueTarget(q_goal_stage2);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Stage2 planning constrained joint target with planning_time=%.2f attempts=%d...",
+    system_config_.planning_time,
+    system_config_.planning_attempts);
   const bool ok =
     (stage2_group.plan(stage2_plan) == moveit::core::MoveItErrorCode::SUCCESS);
   stage2_group.clearPathConstraints();
@@ -786,39 +975,42 @@ bool TwoStagePlannerManager::executeJointTrajectory(
 
 void TwoStagePlannerManager::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
 {
-  if (msg->name.size() != msg->position.size()) {
+  const JointStateValidationResult validation = validateJointStateMessage(
+    *msg,
+    system_config_.expected_joint_names,
+    system_config_.strict_joint_states);
+
+  if (!validation.accepted) {
     RCLCPP_WARN(
       node_->get_logger(),
-      "Received joint_states with mismatched name/position sizes: %zu vs %zu",
-      msg->name.size(),
-      msg->position.size());
+      "Rejected joint state message from %s: %s. expected_joint_names=[%s], received_names=[%s]",
+      system_config_.joint_states_topic.c_str(),
+      validation.reject_reason.c_str(),
+      joinStrings(system_config_.expected_joint_names).c_str(),
+      joinStrings(msg->name).c_str());
     return;
   }
 
-  const auto& joint_names = kinematics_.getJointNames();
-  std::vector<double> q_current(joint_names.size(), 0.0);
-  for (std::size_t i = 0; i < joint_names.size(); ++i) {
-    const auto it = std::find(msg->name.begin(), msg->name.end(), joint_names[i]);
-    if (it == msg->name.end()) {
-      return;
-    }
-    const std::size_t index = static_cast<std::size_t>(std::distance(msg->name.begin(), it));
-    const double value = msg->position[index];
-    if (!std::isfinite(value)) {
-      return;
-    }
-    q_current[i] = value;
+  if (!system_config_.strict_joint_states &&
+      system_config_.warn_unknown_joints &&
+      !validation.unknown_joints.empty()) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Accepted joint state from %s with unknown joints ignored: [%s]",
+      system_config_.joint_states_topic.c_str(),
+      joinStrings(validation.unknown_joints).c_str());
   }
 
   std::lock_guard<std::mutex> lock(joint_state_mutex_);
-  latest_joint_state_ = q_current;
+  latest_joint_state_ = validation.positions;
   has_latest_joint_state_ = true;
 }
 
 bool TwoStagePlannerManager::getCurrentJointState(std::vector<double>& q_current) const
 {
   std::lock_guard<std::mutex> lock(joint_state_mutex_);
-  if (!has_latest_joint_state_ || latest_joint_state_.size() != kinematics_.getJointNames().size()) {
+  if (!has_latest_joint_state_ ||
+      latest_joint_state_.size() != system_config_.expected_joint_names.size()) {
     return false;
   }
   q_current = latest_joint_state_;
