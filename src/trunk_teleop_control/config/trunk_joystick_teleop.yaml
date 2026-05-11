@@ -52,14 +52,14 @@ trunk_joystick_teleop:
     invert_axis_step: false
 
     trunk_joint1:
-      min: -1.57
-      max: 1.57
+      min: -1.39
+      max: 1.39
     trunk_joint2:
-      min: -1.57
-      max: 1.57
+      min: -1.74
+      max: 1.74
     trunk_joint3:
-      min: -1.57
-      max: 1.57
+      min: -1.74
+      max: 1.74
     trunk_joint4:
-      min: -1.57
-      max: 1.57
+      min: -3.14
+      max: 3.14
