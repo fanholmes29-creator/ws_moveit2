@@ -13,7 +13,11 @@
 - `tools/two_stage_planner_analysis_tool.yaml`  
   离线分析工具配置（`two_stage_planner_analysis_tool` 节点使用）。
 - `two_stage_system.rviz`  
-  RViz 布局与显示项配置（只影响显示，不改算法行为）。
+  兼容保留的轻量 RViz 布局，只加载 `RobotModel` 和 debug marker；不再是默认启动配置。
+- `two_stage_system_moveit.rviz`  
+  默认 MoveIt MotionPlanning RViz 布局，用于查看 MoveIt 面板和轨迹动画。
+- `two_stage_system_stable.rviz`  
+  备用轻量 RViz 布局，不加载 MoveIt MotionPlanning 插件。
 
 ---
 
@@ -69,8 +73,9 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
   - `velocity_scaling`, `acceleration_scaling`
   - `stage2_q12_tolerance`：stage2 锁定 q1/q2 的容差
   - `use_live_joint_state_as_start`：是否优先使用 namespace 内实时 `joint_states` 作为规划起点
-  - `allow_start_state_fallback_to_config`：若实时状态暂时不可用，是否回退到配置里的 `q_start`
-  - `live_start_state_wait_sec`：等待实时起点到来的最长时间
+  - `allow_start_state_fallback_to_config`：若实时状态暂时不可用，是否回退到配置里的 `q_start`（仅在不执行控制器时安全）
+  - `live_start_state_wait_sec`：旧参数名，保留兼容
+  - `joint_state_wait_timeout_sec`：等待实时起点到来的最长时间；执行控制器时必须在该时间内收到有效状态
   - `joint_states_topic`：当前关节状态订阅话题
   - `expected_joint_names`：只接受这些 trunk 关节作为实时起点
   - `strict_joint_states`：是否拒绝包含未知关节的 joint state
@@ -92,7 +97,9 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
 - 先保证“可规划成功”，再追求“更严格阶段分离”。
 - 采样数提高会显著增加耗时，先做小步调整。
 - 在线运行时，推荐开启 `use_live_joint_state_as_start: true`，让系统从当前真实关节状态起步。
-- 若启动初期 `joint_states` 可能有延迟，可保留 `allow_start_state_fallback_to_config: true` 作为兜底。
+- 若启用 `execute_joint_trajectory: true`，系统必须先收到有效实时关节状态，不会回退到配置 `q_start` 后继续执行。
+- 默认 `joint_state_wait_timeout_sec: 120.0`，用于覆盖 controller manager / joint state broadcaster 启动较慢的情况。
+- 若启动初期 `joint_states` 仍可能有延迟，请继续调大 `joint_state_wait_timeout_sec`；`allow_start_state_fallback_to_config` 只适合 planning-only 模式兜底。
 - 若你只是想先把轨迹给同事而不立刻执行到底层，可关闭 `execute_joint_trajectory`，只保留标准 `JointTrajectory` 输出。
 - 若你要直接和 `ros2_control` 控制器联调，则应确认 `follow_joint_trajectory_action` 与控制器配置一致。
 - 多机器人网络里不要把 `joint_states_topic` 改成 `/joint_states`；除非你明确知道全局 topic 只有 trunk 一个发布者。
@@ -124,24 +131,36 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
 
 ---
 
-## 3) `two_stage_system.rviz`（可视化配置）
+## 3) RViz 可视化配置
 
 ### 作用
 
 - 定义 RViz 的显示布局、视角、显示插件和话题订阅。
 - 只影响“看起来是什么样”，不影响规划算法结果。
+- 默认使用 `two_stage_system_moveit.rviz`，提供 MoveIt 面板和动画。
+- 如果本机 RViz/MoveIt 插件不稳定，可通过 launch 参数切换到 `two_stage_system_stable.rviz`。
+- 默认启动时序：
+  - RViz 延时 `30 s` 启动
+  - planner / service 延时 `60 s` 启动
+  - live joint state 最长等待 `120 s`
+  这样可以让 controller、move_group、MotionPlanning 面板先稳定，再由 planner 发布轨迹。
 
 ### 常改项
 
 - `Fixed Frame`（需与系统 frame 一致）
-- `Trajectory Topic`（通常是 `display_planned_path`，随 namespace 解析）
+- `RobotModel` 的 `Description Topic`（通常是 `robot_description`，随 namespace 解析）
 - `Marker Topic`（通常是 `two_stage_debug_markers`，随 namespace 解析）
 - 默认视角参数（`Distance`、`Yaw`、`Pitch`、`Focal Point`）
 
 ### 修改建议
 
-- 若“看不到轨迹/标记”，先检查这里的话题名和 frame 是否一致。
-- RViz 也在 `/trunk_robot` namespace 下启动，因此这里的 `Trajectory Topic` / `Marker Topic` 保持相对名即可。
+- 默认配置加载 `moveit_rviz_plugin/MotionPlanning`，可显示 MoveIt 面板和轨迹动画。
+- 备用 `two_stage_system_stable.rviz` 不加载 `moveit_rviz_plugin/MotionPlanning`，用于规避 Humble 上偶发的 InteractiveMarker 插件冲突。
+- launch 默认会先延后启动 RViz，再延后启动 planner，使 MotionPlanning 面板在 `DisplayTrajectory` 发布前完成订阅。
+- planner 节点存活期间会周期性重发最近一次 `DisplayTrajectory`，方便 RViz 后启动或重连后恢复动画显示。
+- RViz 节点会显式放入 `/trunk_robot` namespace，MotionPlanning 应订阅 `/trunk_robot/monitored_planning_scene`。
+- 若“看不到模型/标记/动画”，先检查这里的话题名、frame、namespace 是否一致。
+- RViz 也在 `/trunk_robot` namespace 下启动，因此这里的 `Description Topic` / `Marker Topic` / `Trajectory Topic` 推荐保持相对名即可。
 
 ---
 
@@ -200,7 +219,7 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
   - 如果你希望状态没到就直接失败：
     - `allow_start_state_fallback_to_config: false`
   - 如果你希望先等一会再决定是否回退：
-    - 调 `live_start_state_wait_sec`
+    - 调 `joint_state_wait_timeout_sec`
 
 - **我想确认 namespace 隔离是否生效**
   - 启动后检查：
@@ -260,17 +279,24 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
     - 调 `stage2_pose_wp`、`stage2_pose_wR`
     - 看热力图和 summary 输出后再回写主配置
 
-- **RViz 里看不到轨迹或标记**
-  - 改 `two_stage_system.rviz`：
-    - 校对 `Trajectory Topic`、`Marker Topic`、`Fixed Frame`
+- **RViz 里看不到模型、标记或轨迹动画**
+  - 默认动画配置是 `two_stage_system_moveit.rviz`：
+    - 校对 `Trajectory Topic`、`Planning Scene Topic`、`Robot Description`、`Fixed Frame`
+  - 备用轻量配置是 `two_stage_system_stable.rviz`：
+    - 校对 `Description Topic`、`Marker Topic`、`Fixed Frame`
   - 同时确认主配置里的 `display_trajectory_topic`、`marker_topic`
   - 规划成功后还可以检查：
+    - `ros2 topic info /trunk_robot/robot_description -v`
+    - `ros2 topic info /trunk_robot/monitored_planning_scene -v`
     - `ros2 topic info /trunk_robot/display_planned_path -v`
     - `ros2 topic info /trunk_robot/two_stage_debug_markers -v`
     - `ros2 topic info /trunk_robot/two_stage_joint_trajectory -v`
+  - 如果 MotionPlanning 面板没有动画，确认 planner 日志中出现：
+    - `Published DisplayTrajectory ...`
+    - 且 RViz 已在 `/trunk_robot` namespace 下启动。
 
 - **启动日志太多**
-  - `load_yaml()`、KDL root inertia、Octomap、RViz plugin collision 等多为 MoveIt/RViz/ros2_control 启动噪声。
+  - `load_yaml()`、KDL root inertia、Octomap 等多为 MoveIt/RViz/ros2_control 启动噪声。
   - 调试规划主链路时，优先看 `[trunk_robot.two_stage_planner_system]` 日志。
   - 真正关键的 planner 日志包括：
     - `Using live joint state ...`
@@ -288,6 +314,7 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
 - 修改前建议备份一份当前 YAML。
 - service 模式下，`two_stage_system_params.yaml` 依然是默认目标与系统参数的来源，不会因为新增 service 而失效。
 - 若启用了 `use_live_joint_state_as_start: true`，则本次规划实际使用的 `q_start` 可能与 YAML 里的默认值不同。
+- 若启用了 `execute_joint_trajectory: true`，实时起点是安全要求；没有有效 `joint_states` 时系统会拒绝执行，而不是回退到配置 `q_start`。
 - 若需要严格复现实验结果，建议关闭实时起点模式，固定使用配置里的 `q_start`。
 - 若启用了 `execute_joint_trajectory: true`，则系统在规划成功后不仅会发布轨迹，还会主动向控制器发送 `FollowJointTrajectory` action goal。
 - 若当前只是联调接口，建议先保留 `joint_trajectory_topic` 输出，并根据情况暂时关闭自动执行。

@@ -4,15 +4,15 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, TextSubstitution
-from launch_ros.actions import Node, PushRosNamespace
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    package_share = get_package_share_directory("trunk_two_stage_planner")
+    package_share = get_package_share_directory("trunk_teleop_control")
     default_params_file = os.path.join(
-        package_share, "config", "joystick_joint_teleop.yaml"
+        package_share, "config", "trunk_joystick_teleop.yaml"
     )
 
     return LaunchDescription(
@@ -20,7 +20,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "params_file",
                 default_value=default_params_file,
-                description="YAML parameter file for joystick_joint_teleop.",
+                description="YAML parameter file for trunk_joystick_teleop.",
             ),
             DeclareLaunchArgument("robot_namespace", default_value="trunk_robot"),
             DeclareLaunchArgument("start_joy_node", default_value="true"),
@@ -29,11 +29,11 @@ def generate_launch_description():
             DeclareLaunchArgument("joy_autorepeat_rate", default_value="20.0"),
             DeclareLaunchArgument("teleop_delay_sec", default_value="1.0"),
             DeclareLaunchArgument("log_level", default_value="info"),
-            PushRosNamespace(LaunchConfiguration("robot_namespace")),
             Node(
                 package="joy",
                 executable="joy_node",
                 name="joy_node",
+                namespace=LaunchConfiguration("robot_namespace"),
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("start_joy_node")),
                 parameters=[
@@ -54,10 +54,10 @@ def generate_launch_description():
                 period=LaunchConfiguration("teleop_delay_sec"),
                 actions=[
                     Node(
-                        package="trunk_two_stage_planner",
-                        executable="joystick_joint_teleop",
-                        namespace=[TextSubstitution(text="/")],
-                        name="joystick_joint_teleop",
+                        package="trunk_teleop_control",
+                        executable="trunk_joystick_teleop",
+                        name="trunk_joystick_teleop",
+                        namespace=LaunchConfiguration("robot_namespace"),
                         output="screen",
                         parameters=[LaunchConfiguration("params_file")],
                         arguments=[

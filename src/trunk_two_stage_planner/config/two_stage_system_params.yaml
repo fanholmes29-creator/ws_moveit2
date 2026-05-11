@@ -84,6 +84,7 @@
     use_live_joint_state_as_start: true
     allow_start_state_fallback_to_config: true
     live_start_state_wait_sec: 4.0
+    joint_state_wait_timeout_sec: 120.0
     joint_states_topic: "joint_states"
     expected_joint_names:
       - trunk_joint1

@@ -287,6 +287,9 @@ bool TwoStagePlannerManager::initialize(
     system_config_.joint_states_topic,
     rclcpp::SensorDataQoS(),
     std::bind(&TwoStagePlannerManager::jointStateCallback, this, std::placeholders::_1));
+  display_republish_timer_ = node_->create_wall_timer(
+    std::chrono::seconds(5),
+    std::bind(&TwoStagePlannerManager::republishLatestDisplayTrajectory, this));
   return true;
 }
 
@@ -310,35 +313,57 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
 
   std::vector<double> q_start;
   bool using_live_start = false;
-  if (system_config_.use_live_joint_state_as_start) {
-    const auto wait_deadline =
-      std::chrono::steady_clock::now() +
-      std::chrono::duration<double>(std::max(0.0, system_config_.live_start_state_wait_sec));
-    while (!getCurrentJointState(q_start) && std::chrono::steady_clock::now() < wait_deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
+  const bool execution_requested = system_config_.execute_joint_trajectory;
+  const bool should_wait_for_live_start =
+    system_config_.use_live_joint_state_as_start || execution_requested;
 
-    if (!getCurrentJointState(q_start)) {
+  if (execution_requested && !system_config_.use_live_joint_state_as_start) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "execute_joint_trajectory is true, so live joint state is required even though "
+      "use_live_joint_state_as_start is false.");
+  }
+
+  if (should_wait_for_live_start) {
+    using_live_start = waitForCurrentJointState(q_start);
+    if (!using_live_start) {
+      if (execution_requested) {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "Refusing to execute: no valid live joint state was received from %s within %.2f s. "
+          "Set execute_joint_trajectory:=false to allow planning-only fallback to q_start.",
+          system_config_.joint_states_topic.c_str(),
+          system_config_.joint_state_wait_timeout_sec);
+        return PlannerResult::fail(
+          PlannerError::StartStateUnavailable,
+          "Execution requires a valid live joint state.");
+      }
+
       if (!system_config_.allow_start_state_fallback_to_config) {
         RCLCPP_ERROR(
           node_->get_logger(),
           "Failed to acquire live joint state from %s within %.2f s.",
           system_config_.joint_states_topic.c_str(),
-          system_config_.live_start_state_wait_sec);
+          system_config_.joint_state_wait_timeout_sec);
         return PlannerResult::fail(
           PlannerError::StartStateUnavailable,
           "Failed to acquire live joint state and start-state fallback is disabled.");
       }
+
       q_start = algorithm_config_.q_start;
       RCLCPP_WARN(
         node_->get_logger(),
-        "Live joint state unavailable on %s; falling back to configured q_start.",
+        "Live joint state unavailable on %s; falling back to configured q_start because "
+        "execute_joint_trajectory is false.",
         system_config_.joint_states_topic.c_str());
-    } else {
-      using_live_start = true;
     }
   } else {
     q_start = algorithm_config_.q_start;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Using configured q_start because use_live_joint_state_as_start and "
+      "execute_joint_trajectory are both false. q_start=[%s]",
+      joinDoubles(q_start).c_str());
   }
 
   if (using_live_start) {
@@ -741,6 +766,31 @@ void TwoStagePlannerManager::publishDisplayTrajectories(
   msg.trajectory.push_back(stage1_traj);
   msg.trajectory.push_back(stage2_traj);
   display_pub_->publish(msg);
+
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    latest_display_trajectory_ = msg;
+    has_latest_display_trajectory_ = true;
+  }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Published DisplayTrajectory with %zu stage trajectories on %s. It will be republished "
+    "periodically while the planner node is alive so RViz can reconnect and animate it.",
+    msg.trajectory.size(),
+    system_config_.display_trajectory_topic.c_str());
+}
+
+void TwoStagePlannerManager::republishLatestDisplayTrajectory() const
+{
+  moveit_msgs::msg::DisplayTrajectory msg;
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    if (!has_latest_display_trajectory_) {
+      return;
+    }
+    msg = latest_display_trajectory_;
+  }
+  display_pub_->publish(msg);
 }
 
 void TwoStagePlannerManager::publishDebugMarkers(
@@ -1004,6 +1054,15 @@ void TwoStagePlannerManager::jointStateCallback(const sensor_msgs::msg::JointSta
   std::lock_guard<std::mutex> lock(joint_state_mutex_);
   latest_joint_state_ = validation.positions;
   has_latest_joint_state_ = true;
+  if (!logged_first_joint_state_) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Received live joint state from %s. expected_joint_names=[%s], q_current=[%s]",
+      system_config_.joint_states_topic.c_str(),
+      joinStrings(system_config_.expected_joint_names).c_str(),
+      joinDoubles(latest_joint_state_).c_str());
+    logged_first_joint_state_ = true;
+  }
 }
 
 bool TwoStagePlannerManager::getCurrentJointState(std::vector<double>& q_current) const
@@ -1015,6 +1074,36 @@ bool TwoStagePlannerManager::getCurrentJointState(std::vector<double>& q_current
   }
   q_current = latest_joint_state_;
   return true;
+}
+
+bool TwoStagePlannerManager::waitForCurrentJointState(std::vector<double>& q_current) const
+{
+  const double timeout_sec = std::max(0.0, system_config_.joint_state_wait_timeout_sec);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Waiting up to %.2f s for live joint state from %s. expected_joint_names=[%s]",
+    timeout_sec,
+    system_config_.joint_states_topic.c_str(),
+    joinStrings(system_config_.expected_joint_names).c_str());
+
+  const auto wait_deadline =
+    std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_sec);
+  while (rclcpp::ok()) {
+    if (getCurrentJointState(q_current)) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "Using latest live joint state from %s as planning start. q_start=[%s]",
+        system_config_.joint_states_topic.c_str(),
+        joinDoubles(q_current).c_str());
+      return true;
+    }
+
+    if (std::chrono::steady_clock::now() >= wait_deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return false;
 }
 
 }  // namespace trunk_two_stage_planner

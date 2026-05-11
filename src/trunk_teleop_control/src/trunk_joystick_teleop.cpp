@@ -1,9 +1,7 @@
 #include <algorithm>
-#include <array>
-#include <chrono>
 #include <cmath>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -12,27 +10,29 @@
 
 #include "builtin_interfaces/msg/duration.hpp"
 #include "control_msgs/action/follow_joint_trajectory.hpp"
+#include "control_msgs/msg/joint_trajectory_controller_state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "sensor_msgs/msg/joy.hpp"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 
-class JoystickJointTeleop : public rclcpp::Node
+class TrunkJoystickTeleop : public rclcpp::Node
 {
 public:
   using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
   using GoalHandleFollowJointTrajectory = rclcpp_action::ClientGoalHandle<FollowJointTrajectory>;
 
-  JoystickJointTeleop()
-  : Node("joystick_joint_teleop")
+  TrunkJoystickTeleop()
+  : Node("trunk_joystick_teleop")
   {
-    joy_topic_ = declare_parameter<std::string>("joy_topic", "/trunk_robot/joy");
-    joint_states_topic_ =
-      declare_parameter<std::string>("joint_states_topic", "/trunk_robot/joint_states");
+    joy_topic_ = declare_parameter<std::string>("joy_topic", "joy");
+    joint_states_topic_ = declare_parameter<std::string>("joint_states_topic", "joint_states");
+    controller_state_topic_ = declare_parameter<std::string>(
+      "controller_state_topic", "trunk_group_controller/controller_state");
+    use_controller_state_ = declare_parameter<bool>("use_controller_state", true);
     follow_joint_trajectory_action_ = declare_parameter<std::string>(
-      "follow_joint_trajectory_action",
-      "/trunk_robot/trunk_group_controller/follow_joint_trajectory");
+      "follow_joint_trajectory_action", "trunk_group_controller/follow_joint_trajectory");
     joint_names_ = declare_parameter<std::vector<std::string>>(
       "joint_names",
       {"trunk_joint1", "trunk_joint2", "trunk_joint3", "trunk_joint4"});
@@ -70,17 +70,39 @@ public:
 
     joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
       joy_topic_, rclcpp::SystemDefaultsQoS(),
-      std::bind(&JoystickJointTeleop::joyCallback, this, std::placeholders::_1));
+      std::bind(&TrunkJoystickTeleop::joyCallback, this, std::placeholders::_1));
 
     joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
       joint_states_topic_, rclcpp::SystemDefaultsQoS(),
-      std::bind(&JoystickJointTeleop::jointStateCallback, this, std::placeholders::_1));
+      std::bind(&TrunkJoystickTeleop::jointStateCallback, this, std::placeholders::_1));
+
+    if (use_controller_state_) {
+      controller_state_sub_ =
+        create_subscription<control_msgs::msg::JointTrajectoryControllerState>(
+          controller_state_topic_, rclcpp::SystemDefaultsQoS(),
+          std::bind(
+            &TrunkJoystickTeleop::controllerStateCallback, this, std::placeholders::_1));
+    }
 
     logParameters();
   }
 
 private:
   static std::string vectorToString(const std::vector<double> & values)
+  {
+    std::ostringstream stream;
+    stream << "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      stream << values[i];
+      if (i + 1 < values.size()) {
+        stream << ", ";
+      }
+    }
+    stream << "]";
+    return stream.str();
+  }
+
+  static std::string vectorToStringNames(const std::vector<std::string> & values)
   {
     std::ostringstream stream;
     stream << "[";
@@ -121,7 +143,7 @@ private:
     return msg.axes[static_cast<std::size_t>(index)];
   }
 
-  bool isRisingEdge(bool current, bool previous) const
+  static bool isRisingEdge(bool current, bool previous)
   {
     return current && !previous;
   }
@@ -167,8 +189,8 @@ private:
 
     RCLCPP_DEBUG(
       get_logger(),
-      "Joy state: deadman_active=%s A=%d B=%d X=%d Y=%d axis_step_value=%.3f axis_positive=%d "
-      "axis_negative=%d selected_joint_index=%zu selected_joint_name=%s",
+      "Joy state: deadman_active=%s A=%d B=%d X=%d Y=%d axis_step_value=%.3f "
+      "axis_positive=%d axis_negative=%d selected_joint_index=%zu selected_joint_name=%s",
       motion_enabled ? "true" : "false",
       a_pressed ? 1 : 0, b_pressed ? 1 : 0, x_pressed ? 1 : 0, y_pressed ? 1 : 0,
       axis_step_value, axis_positive ? 1 : 0, axis_negative ? 1 : 0,
@@ -210,11 +232,10 @@ private:
       return;
     }
     if (msg->name.size() != msg->position.size()) {
-      RCLCPP_WARN(
-        get_logger(),
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
         "JointState name size (%zu) does not match position size (%zu); ignoring message.",
         msg->name.size(), msg->position.size());
-      has_joint_state_ = false;
       return;
     }
 
@@ -228,13 +249,55 @@ private:
     for (std::size_t i = 0; i < joint_names_.size(); ++i) {
       const auto it = joint_index.find(joint_names_[i]);
       if (it == joint_index.end()) {
-        RCLCPP_WARN(
-          get_logger(), "JointState is missing required joint '%s'; motion goals are disabled.",
-          joint_names_[i].c_str());
-        has_joint_state_ = false;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "JointState on '%s' is missing required joint '%s'; ignoring this message. "
+          "Available joints: %s",
+          joint_states_topic_.c_str(), joint_names_[i].c_str(),
+          vectorToStringNames(msg->name).c_str());
         return;
       }
       q_current[i] = msg->position[it->second];
+    }
+
+    q_current_ = std::move(q_current);
+    has_joint_state_ = true;
+  }
+
+  void controllerStateCallback(
+    const control_msgs::msg::JointTrajectoryControllerState::SharedPtr msg)
+  {
+    if (!msg) {
+      return;
+    }
+    if (msg->joint_names.size() != msg->actual.positions.size()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Controller state joint_names size (%zu) does not match actual.positions size (%zu); "
+        "ignoring message.",
+        msg->joint_names.size(), msg->actual.positions.size());
+      return;
+    }
+
+    std::unordered_map<std::string, std::size_t> joint_index;
+    joint_index.reserve(msg->joint_names.size());
+    for (std::size_t i = 0; i < msg->joint_names.size(); ++i) {
+      joint_index[msg->joint_names[i]] = i;
+    }
+
+    std::vector<double> q_current(joint_names_.size(), 0.0);
+    for (std::size_t i = 0; i < joint_names_.size(); ++i) {
+      const auto it = joint_index.find(joint_names_[i]);
+      if (it == joint_index.end()) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Controller state on '%s' is missing required joint '%s'; ignoring this message. "
+          "Available joints: %s",
+          controller_state_topic_.c_str(), joint_names_[i].c_str(),
+          vectorToStringNames(msg->joint_names).c_str());
+        return;
+      }
+      q_current[i] = msg->actual.positions[it->second];
     }
 
     q_current_ = std::move(q_current);
@@ -332,13 +395,13 @@ private:
 
     rclcpp_action::Client<FollowJointTrajectory>::SendGoalOptions send_goal_options;
     send_goal_options.goal_response_callback =
-      std::bind(&JoystickJointTeleop::goalResponseCallback, this, std::placeholders::_1);
+      std::bind(&TrunkJoystickTeleop::goalResponseCallback, this, std::placeholders::_1);
     send_goal_options.feedback_callback =
       std::bind(
-        &JoystickJointTeleop::feedbackCallback, this, std::placeholders::_1,
+        &TrunkJoystickTeleop::feedbackCallback, this, std::placeholders::_1,
         std::placeholders::_2);
     send_goal_options.result_callback =
-      std::bind(&JoystickJointTeleop::resultCallback, this, std::placeholders::_1);
+      std::bind(&TrunkJoystickTeleop::resultCallback, this, std::placeholders::_1);
 
     action_client_->async_send_goal(goal_msg, send_goal_options);
   }
@@ -383,9 +446,11 @@ private:
 
   void logParameters() const
   {
-    RCLCPP_INFO(get_logger(), "joystick_joint_teleop parameters:");
+    RCLCPP_INFO(get_logger(), "trunk_joystick_teleop parameters:");
     RCLCPP_INFO(get_logger(), "  joy_topic: %s", joy_topic_.c_str());
     RCLCPP_INFO(get_logger(), "  joint_states_topic: %s", joint_states_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "  use_controller_state: %s", use_controller_state_ ? "true" : "false");
+    RCLCPP_INFO(get_logger(), "  controller_state_topic: %s", controller_state_topic_.c_str());
     RCLCPP_INFO(
       get_logger(), "  follow_joint_trajectory_action: %s",
       follow_joint_trajectory_action_.c_str());
@@ -408,26 +473,15 @@ private:
     }
   }
 
-  static std::string vectorToStringNames(const std::vector<std::string> & values)
-  {
-    std::ostringstream stream;
-    stream << "[";
-    for (std::size_t i = 0; i < values.size(); ++i) {
-      stream << values[i];
-      if (i + 1 < values.size()) {
-        stream << ", ";
-      }
-    }
-    stream << "]";
-    return stream.str();
-  }
-
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp::Subscription<control_msgs::msg::JointTrajectoryControllerState>::SharedPtr
+    controller_state_sub_;
   rclcpp_action::Client<FollowJointTrajectory>::SharedPtr action_client_;
 
   std::string joy_topic_;
   std::string joint_states_topic_;
+  std::string controller_state_topic_;
   std::string follow_joint_trajectory_action_;
   std::vector<std::string> joint_names_;
   std::vector<double> joint_min_limits_;
@@ -437,6 +491,7 @@ private:
   double trajectory_duration_{0.5};
   double joy_timeout_{0.5};
   bool require_deadman_{true};
+  bool use_controller_state_{true};
 
   int button_a_{0};
   int button_b_{1};
@@ -466,7 +521,7 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<JoystickJointTeleop>());
+  rclcpp::spin(std::make_shared<TrunkJoystickTeleop>());
   rclcpp::shutdown();
   return 0;
 }

@@ -1,6 +1,9 @@
 Panels:
   - Class: rviz_common/Displays
     Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /MotionPlanning1
   - Class: rviz_common/Views
     Name: Views
 Visualization Manager:
@@ -8,23 +11,19 @@ Visualization Manager:
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Value: true
-    - Class: rviz_default_plugins/RobotModel
-      Collision Enabled: false
-      Description Source: Topic
-      Description Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /trunk_robot/robot_description
-      Enabled: true
-      Name: RobotModel
-      Update Interval: 0
+    - Class: moveit_rviz_plugin/MotionPlanning
+      Name: MotionPlanning
+      Planned Path:
+        Loop Animation: true
+        State Display Time: 0.05 s
+        Trajectory Topic: display_planned_path
+      Planning Scene Topic: monitored_planning_scene
+      Robot Description: robot_description
+      Scene Geometry:
+        Scene Alpha: 1
+      Scene Robot:
+        Robot Alpha: 0.5
       Value: true
-      Visual Enabled: true
-    - Class: rviz_default_plugins/TF
-      Name: TF
-      Value: false
     - Class: rviz_default_plugins/MarkerArray
       Marker Topic: two_stage_debug_markers
       Name: TwoStageDebug

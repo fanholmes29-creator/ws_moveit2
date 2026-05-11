@@ -193,6 +193,9 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
     "allow_start_state_fallback_to_config",
     config.allow_start_state_fallback_to_config);
   declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
+  const double live_start_wait_sec =
+    node->get_parameter("live_start_state_wait_sec").as_double();
+  declareIfMissingDouble(node, "joint_state_wait_timeout_sec", live_start_wait_sec);
   declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
   declareIfMissingStringArray(node, "expected_joint_names", config.expected_joint_names);
   declareIfMissingBool(node, "strict_joint_states", config.strict_joint_states);
@@ -230,6 +233,8 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.allow_start_state_fallback_to_config =
     node->get_parameter("allow_start_state_fallback_to_config").as_bool();
   config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
+  config.joint_state_wait_timeout_sec =
+    node->get_parameter("joint_state_wait_timeout_sec").as_double();
   config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
   config.expected_joint_names = node->get_parameter("expected_joint_names").as_string_array();
   config.strict_joint_states = node->get_parameter("strict_joint_states").as_bool();

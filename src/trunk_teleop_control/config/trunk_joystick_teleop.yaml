@@ -1,8 +1,18 @@
-joystick_joint_teleop:
+trunk_joystick_teleop:
   ros__parameters:
-    joy_topic: "/trunk_robot/joy"
-    joint_states_topic: "/joint_states"
-    follow_joint_trajectory_action: "/trunk_group_controller/follow_joint_trajectory"
+    # Relative names are resolved under the node namespace.
+    # With robot_namespace:=trunk_robot, these become:
+    #   /trunk_robot/joy
+    #   /trunk_robot/joint_states
+    #   /trunk_robot/trunk_group_controller/controller_state
+    #   /trunk_robot/trunk_group_controller/follow_joint_trajectory
+    joy_topic: "joy"
+    joint_states_topic: "joint_states"
+    # Prefer controller actual state for FakeSystem/open-loop controller feedback.
+    # joint_states remains available as a fallback state source.
+    use_controller_state: true
+    controller_state_topic: "trunk_group_controller/controller_state"
+    follow_joint_trajectory_action: "trunk_group_controller/follow_joint_trajectory"
 
     joint_names:
       - trunk_joint1
@@ -30,21 +40,11 @@ joystick_joint_teleop:
     #   buttons[11] -> START
     #   buttons[12] -> left stick press
     #   buttons[13] -> right stick press
-    #
-    # Current teleop mapping in this node:
     button_a: 0
     button_b: 1
     button_x: 3
     button_y: 4
     button_l1: 6
-    # Reserved for future extension:
-    # button_r1: 7
-    # button_l2: 8
-    # button_r2: 9
-    # button_select: 10
-    # button_start: 11
-    # button_left_stick_press: 12
-    # button_right_stick_press: 13
 
     # Left stick vertical axis (Yahboom: axes[1], up positive, down negative)
     axis_step: 1

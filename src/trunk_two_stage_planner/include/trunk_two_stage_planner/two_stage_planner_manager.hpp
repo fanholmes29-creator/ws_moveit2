@@ -59,6 +59,7 @@ struct TwoStageSystemConfig
   bool use_live_joint_state_as_start = true;
   bool allow_start_state_fallback_to_config = true;
   double live_start_state_wait_sec = 2.0;
+  double joint_state_wait_timeout_sec = 2.0;
   std::string joint_states_topic = "joint_states";
   std::vector<std::string> expected_joint_names{
     "trunk_joint1", "trunk_joint2", "trunk_joint3", "trunk_joint4" };
@@ -145,6 +146,8 @@ private:
   bool executeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) const;
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
   bool getCurrentJointState(std::vector<double>& q_current) const;
+  bool waitForCurrentJointState(std::vector<double>& q_current) const;
+  void republishLatestDisplayTrajectory() const;
 
   rclcpp::Node::SharedPtr node_;
   PlannerConfig algorithm_config_;
@@ -159,9 +162,14 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr joint_traj_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp::TimerBase::SharedPtr display_republish_timer_;
   mutable std::mutex joint_state_mutex_;
   std::vector<double> latest_joint_state_;
   bool has_latest_joint_state_ = false;
+  bool logged_first_joint_state_ = false;
+  mutable std::mutex display_trajectory_mutex_;
+  mutable moveit_msgs::msg::DisplayTrajectory latest_display_trajectory_;
+  mutable bool has_latest_display_trajectory_ = false;
 };
 
 }  // namespace trunk_two_stage_planner

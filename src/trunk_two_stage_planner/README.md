@@ -114,7 +114,7 @@
 
 注意：
 
-- 当前主系统默认是“规划 + 显示 + 导出”
+- 当前主系统默认是“规划 + 显示 + 导出 + 发送控制器执行”
 - 规划成功后一定会发布完整 `JointTrajectory`
 - 是否继续发送 `FollowJointTrajectory` goal 由 `execute_joint_trajectory` 控制
 - 接入真实硬件时，控制器安全策略与硬件闭环仍需单独联调验证
@@ -135,10 +135,11 @@
 
 1. 订阅 `joint_states_topic`（默认 `joint_states`，随 `robot_namespace` 解析）
 2. 按 `expected_joint_names` 校验并重排得到当前关节状态
-3. 在 `live_start_state_wait_sec` 时间内等待有效状态
+3. 在 `joint_state_wait_timeout_sec` 时间内等待有效状态
 4. 若成功收到，则使用实时关节状态作为本次规划起点
 5. 若未收到：
-   - `allow_start_state_fallback_to_config: true` -> 回退到配置 `q_start`
+   - `execute_joint_trajectory: true` -> 拒绝执行，避免轨迹起点与控制器当前状态不一致
+   - `execute_joint_trajectory: false` 且 `allow_start_state_fallback_to_config: true` -> 回退到配置 `q_start`
    - `allow_start_state_fallback_to_config: false` -> 直接报错退出
 
 实时起点会额外执行 joint state 安全校验：
@@ -151,9 +152,11 @@
 
 - `use_live_joint_state_as_start: false`
 
-则系统直接使用配置文件中的：
+且 `execute_joint_trajectory: false`，则系统直接使用配置文件中的：
 
 - `q_start`
+
+若 `execute_joint_trajectory: true`，系统仍会强制等待有效实时关节状态，并用它作为规划起点。
 
 ### 2. 终点位姿如何确定
 
@@ -216,11 +219,13 @@
 ```mermaid
 flowchart TD
     A[系统启动] --> B[读取算法配置与系统配置]
-    B --> C{是否启用实时起点}
+    B --> C{use_live_joint_state_as_start 或 execute_joint_trajectory}
     C -- 是 --> D[订阅 namespace 内 joint_states]
     D --> E{在等待时间内是否收到有效关节状态}
     E -- 是 --> F[使用实时 q_start]
-    E -- 否 --> G{是否允许回退到配置 q_start}
+    E -- 否 --> Y{execute_joint_trajectory}
+    Y -- true --> X[拒绝执行并报错退出]
+    Y -- false --> G{是否允许回退到配置 q_start}
     G -- 是 --> H[使用配置 q_start]
     G -- 否 --> X[报错退出]
     C -- 否 --> H
@@ -450,6 +455,8 @@ J_{\text{ik}}
   - `config/`
     - `two_stage_system_params.yaml`
     - `two_stage_system.rviz`
+    - `two_stage_system_moveit.rviz`
+    - `two_stage_system_stable.rviz`
     - `README.md`
     - `tools/`
       - `two_stage_planner_analysis_tool.yaml`
@@ -484,7 +491,7 @@ J_{\text{ik}}
 
 - 起点与目标位姿来源
 - 算法参数
-- MoveIt 运行参数
+- MoveIt 运行参数0
 - 实时起点模式
 - 导出与话题
 
@@ -500,7 +507,12 @@ J_{\text{ik}}
 
 ### RViz 配置
 
+- `config/two_stage_system_moveit.rviz`
+  - 默认 MotionPlanning 动画版
+- `config/two_stage_system_stable.rviz`
+  - 备用轻量稳定版
 - `config/two_stage_system.rviz`
+  - 兼容保留的轻量布局
 
 只影响显示，不改算法行为。
 
@@ -537,13 +549,27 @@ source install/setup.bash
 ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py
 ```
 
+如果希望使用当前验证过的稳态启动参数，可显式写成：
+
+```bash
+ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py \
+  system_use_rviz:=true \
+  rviz_delay_sec:=30.0 \
+  manager_delay_sec:=60.0 \
+  joint_state_wait_timeout_sec:=120.0
+```
+
+这些也是当前默认值。RViz 会先于 planner 启动，使 MotionPlanning 面板能订阅到后续发布的
+`display_planned_path` 并播放动画。
+
 说明：
 
 - 默认整套 trunk 系统会启动在 `/trunk_robot` namespace 下。
 - 系统启动后，会优先从 `/trunk_robot/joint_states` 读取当前 trunk 关节状态作为规划起点。
-- 如果在 `live_start_state_wait_sec` 时间内未收到有效状态，可按配置决定：
-  - 回退到 `q_start`
+- 如果在 `joint_state_wait_timeout_sec` 时间内未收到有效状态，可按配置决定：
+  - planning-only 模式回退到 `q_start`
   - 或直接报错退出
+- 如果 `execute_joint_trajectory: true`，未收到有效实时状态时会拒绝执行，不会回退到 `q_start`。
 - 如需更换 namespace，可追加 `robot_namespace:=my_trunk`。
 
 ### 无界面调试
@@ -551,7 +577,10 @@ ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py
 ```bash
 mkdir -p ~/ws_moveit2/log/ros
 export ROS_LOG_DIR=~/ws_moveit2/log/ros
-ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py system_use_rviz:=false manager_delay_sec:=2.0
+ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py \
+  system_use_rviz:=false \
+  manager_delay_sec:=60.0 \
+  joint_state_wait_timeout_sec:=120.0
 ```
 
 ### Service 模式启动（供上层系统调用）
@@ -566,7 +595,10 @@ ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py
 如果你不需要 RViz，也可以：
 
 ```bash
-ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py service_use_rviz:=false service_delay_sec:=2.0
+ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py \
+  service_use_rviz:=false \
+  service_delay_sec:=60.0 \
+  joint_state_wait_timeout_sec:=120.0
 ```
 
 说明：
@@ -622,6 +654,8 @@ ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py
 - `expected_joint_names` 指定本规划器只接受的 trunk 关节集合
 - `strict_joint_states: true` 时，`JointState.name` 必须与 `expected_joint_names` 完全一致
 - `strict_joint_states: false` 时，只要求包含所有期望关节；若存在未知关节且 `warn_unknown_joints: true`，系统会报警但继续使用期望关节
+- `joint_state_wait_timeout_sec` 控制等待有效实时状态的最长时间
+- `execute_joint_trajectory: true` 时，实时状态是执行安全前置条件；没有有效状态会拒绝执行
 
 默认 `strict_joint_states=true`，可防止混合 joint state 被误用为规划起点。namespace 隔离解决“收到别人的 topic”，strict 检查解决“收到内容不符合 trunk 模型”的二次保护。
 
@@ -798,289 +832,22 @@ ros2 run trunk_two_stage_planner example_plan_to_pose_client \
 
 ---
 
-## 手柄联调最小流程（已验证）
+## Trunk Teleop Control
 
-本节记录当前已经在本工程中验证通过的手柄联调路径，目标是以最少步骤稳定复现：
+Joystick / operator teleoperation has been moved to the standalone package:
 
-- 手柄控制 `joystick_joint_teleop`
-- 通过 `FollowJointTrajectory` 驱动 trunk 关节
-- RViz 中看到 trunk 模型随关节状态变化
+`trunk_teleop_control`
 
-> 说明：本节是“运行手册”，优先保证可复现。后续设计演进仍以“手柄控制说明书（设计稿）”为准。
-
-### 1. 运行前约束
-
-所有终端必须使用相同环境，否则会出现“节点互相看不见”“action/server 为 0”等问题：
+Please use:
 
 ```bash
-source ~/ws_moveit2/install/setup.bash
-export ROS_DOMAIN_ID=77
-export ROS_LOCALHOST_ONLY=1
+ros2 launch trunk_teleop_control trunk_teleop_ros2_control_rviz.launch.py \
+  namespace:=trunk_robot \
+  start_joy_node:=true \
+  start_rviz:=true
 ```
 
-建议联调前先清理历史进程与 daemon：
-
-```bash
-pkill -f ros2 || true
-ros2 daemon stop
-ros2 daemon start
-```
-
-### 2. 两终端启动顺序（最小可用）
-
-终端 1：启动控制栈（FakeSystem + controller）
-
-```bash
-source ~/ws_moveit2/install/setup.bash
-export ROS_DOMAIN_ID=77
-export ROS_LOCALHOST_ONLY=1
-ros2 launch trunk_configure demo.launch.py use_rviz:=false
-```
-
-终端 2：启动手柄 + teleop + RViz
-
-```bash
-source ~/ws_moveit2/install/setup.bash
-export ROS_DOMAIN_ID=77
-export ROS_LOCALHOST_ONLY=1
-ros2 launch trunk_two_stage_planner joystick_joint_teleop_rviz.launch.py start_joy_node:=true log_level:=info
-```
-
-### 3. 当前已验证参数基线
-
-`config/joystick_joint_teleop.yaml` 当前联调基线：
-
-- `joy_topic: "/trunk_robot/joy"`
-- `joint_states_topic: "/joint_states"`
-- `follow_joint_trajectory_action: "/trunk_group_controller/follow_joint_trajectory"`
-- `button_a: 0`
-- `button_b: 1`
-- `button_x: 3`
-- `button_y: 4`
-- `button_l1: 6`
-- `axis_step: 1`
-- `axis_step_threshold: 0.5`
-- `invert_axis_step: false`
-
-控制规则（第一版）：
-
-- 按住 `L1` 才允许选关节和发送运动
-- `A/B/X/Y` 选择 `trunk_joint1..4`
-- 左摇杆上下（`axis_step`）触发单步正/反向
-- 采用 rising-edge 触发，长按摇杆不会连续发送 goal
-
-### 4. 三条健康检查命令（验收标准）
-
-```bash
-ros2 action info /trunk_group_controller/follow_joint_trajectory
-ros2 topic info /joint_states -v
-ros2 topic info /trunk_robot/joy -v
-```
-
-期望结果：
-
-- `Action servers: 1`
-- `/joint_states` 的 `Publisher count >= 1`
-- `/trunk_robot/joy` 的 `Publisher count = 1`（避免多个 joy_node 同时发布）
-
-### 5. 常见故障对照
-
-- `Cannot send goal before receiving valid joint states.`  
-  -> `joint_states_topic` 无有效发布，或消息中缺少 `trunk_joint1..4`
-- `Action server '...follow_joint_trajectory' is not available; skipping goal.`  
-  -> `trunk_group_controller` 未激活，或 `follow_joint_trajectory_action` 名称不匹配
-- `xmlrpc.client.Fault: ... !rclpy.ok()`  
-  -> CLI daemon 异常，执行 `ros2 daemon stop && ros2 daemon start`，必要时使用 `ros2 --no-daemon ...`
-- `/trunk_robot/joy` Publisher count > 1  
-  -> 重复启动了 `joy_node`，可能导致 deadman/轴值被互相覆盖
-
----
-
-## 手柄控制说明书（设计稿）
-
-本节用于定义后续手柄控制功能的实现边界和操作规则。当前建议先实现**关节空间控制**，在 RViz / FakeSystem 中验证稳定后，再扩展到真实机器人和笛卡尔空间控制。
-
-### 1. 功能目标
-
-手柄控制功能用于通过游戏手柄控制 trunk 机器人运动：
-
-- 第一阶段：实现关节空间控制，由手柄选择关节并产生关节增量。
-- 第二阶段：扩展摇杆连续控制，提高操作流畅性。
-- 第三阶段：扩展笛卡尔空间控制，由手柄产生末端目标位姿，再交给两阶段规划器。
-
-核心原则：
-
-- 关节空间模式下，手柄直接生成 `q_target`，再发送 `FollowJointTrajectory` action。
-- 笛卡尔空间模式下，手柄生成 `target_pose`，再调用两阶段规划 service。
-- 手柄输入层不直接写进算法层，避免把硬件输入逻辑污染到 `TwoStagePlanner`。
-
-### 2. 控制模式划分
-
-| 模式 | 手柄输入含义 | 系统生成 | 是否走两阶段算法 | 输出接口 |
-|---|---|---|---|---|
-| 关节空间模式 | 关节选择 + 关节增量 `delta_q` | `q_target` | 否 | `FollowJointTrajectory` action |
-| 笛卡尔空间模式 | 末端位姿增量 `delta_pose` | `target_pose` | 是 | `PlanToPose` service |
-
-第一版只实现关节空间模式。笛卡尔空间模式等关节控制稳定后再做。
-
-### 3. 关节空间控制流程
-
-关节空间控制不需要 IK，也不需要 `q_pre` 搜索。它的目标是直接把当前关节状态移动到新的关节目标。
-
-```text
-手柄输入
-  ↓
-检查 deadman 安全键
-  ↓
-读取 /trunk_robot/joint_states 得到 q_current
-  ↓
-根据按键或摇杆生成 delta_q
-  ↓
-q_target = q_current + delta_q
-  ↓
-执行关节限位 / 速度限制 / 步长限制
-  ↓
-构造 trajectory_msgs/msg/JointTrajectory
-  ↓
-发送到 /trunk_robot/trunk_group_controller/follow_joint_trajectory
-```
-
-### 4. 推荐 ROS 接口
-
-| 类型 | 接口 |
-|---|---|
-| 手柄输入 | `/trunk_robot/joy` |
-| 当前关节状态 | `/trunk_robot/joint_states` |
-| 关节空间执行 | `/trunk_robot/trunk_group_controller/follow_joint_trajectory` |
-| 后续笛卡尔规划 | `/trunk_robot/two_stage_planner/plan_to_pose` |
-
-建议新增一个独立节点，例如：
-
-- `joystick_joint_teleop`
-
-该节点负责订阅 `Joy` 和 `JointState`，并向 controller action 发送短时 `JointTrajectory`。
-
-### 5. 第一版操作规则：按键单步控制
-
-第一版建议使用“组合键选择关节 + 单步增量”的方式，原因是安全、明确、容易调试。
-
-| 操作 | 功能 |
-|---|---|
-| 按住 `L1` | deadman，使能运动 |
-| 松开 `L1` | 停止发送运动目标 |
-| `L1 + A` | 选择 `trunk_joint1` |
-| `L1 + B` | 选择 `trunk_joint2` |
-| `L1 + X` | 选择 `trunk_joint3` |
-| `L1 + Y` | 选择 `trunk_joint4` |
-| `L1 + DPad Up` | 当前选中关节正向转动一步 |
-| `L1 + DPad Down` | 当前选中关节反向转动一步 |
-
-建议初始参数：
-
-| 参数 | 建议初值 |
-|---|---|
-| 单步角度 | `2 deg`，约 `0.0349 rad` |
-| 单步执行时间 | `0.5 s` |
-| joy 超时时间 | `0.5 s` |
-| deadman | 必须开启 |
-
-单步目标计算方式：
-
-```text
-q_target = q_current
-q_target[selected_joint] += direction * step_rad
-q_target = clamp(q_target, joint_limits)
-```
-
-然后生成一条单点轨迹：
-
-```text
-joint_names:
-  - trunk_joint1
-  - trunk_joint2
-  - trunk_joint3
-  - trunk_joint4
-
-points[0].positions = q_target
-points[0].time_from_start = 0.5 s
-```
-
-### 6. 第二版操作规则：摇杆连续控制
-
-第二版再加入摇杆连续控制：
-
-| 操作 | 功能 |
-|---|---|
-| 按住 `L1` + 右摇杆上下 | 当前选中关节连续正/反向运动 |
-
-建议计算方式：
-
-```text
-control_period = 0.1 s
-max_velocity = 5 deg/s
-delta_q = axis_value * max_velocity * control_period
-q_target = q_current + delta_q
-```
-
-连续控制要注意：
-
-- 不要无限频率发送 action goal，建议先限制在 `5-10 Hz`。
-- 如果上一条 action 未完成，第一版可以选择不发新 goal。
-- 后续如果要更丝滑，再考虑速度控制或专门的 jog 接口。
-
-### 7. 后续笛卡尔空间控制
-
-笛卡尔空间模式下，手柄不直接给 `q_target`，而是给末端位姿增量：
-
-```text
-手柄输入
-  ↓
-根据当前末端位姿生成 target_pose
-  ↓
-调用 /trunk_robot/two_stage_planner/plan_to_pose
-  ↓
-TwoStagePlanner 求解 q_goal_ik / q_pre / q_goal_stage2
-  ↓
-TwoStagePlannerManager 生成并执行两阶段轨迹
-```
-
-因此：
-
-- 关节空间模式：手柄生成 `q_target`，直接走 controller。
-- 笛卡尔空间模式：手柄生成 `target_pose`，走两阶段规划算法。
-
-### 8. 安全策略
-
-真实机器人上必须满足以下安全要求：
-
-- 未按住 deadman 时，不发送任何运动目标。
-- joy 超时后，不再发送运动目标。
-- 每次目标都必须检查 joint limit。
-- 每次目标都必须限制单步角度和最大速度。
-- controller action 不可用时，必须拒绝运动。
-- 松开 deadman 后，应保持当前位置或停止继续发送目标。
-- 初次上真实机器人时，应先降低 `step_rad` 和 `max_velocity`。
-- 急停和硬件安全链路必须由底层系统兜底，手柄节点不能替代硬件安全。
-
-### 9. 推荐实现顺序
-
-1. 先接入 `joy_node`，确认 `/trunk_robot/joy` 有手柄数据。
-2. 实现 `joystick_joint_teleop`，只支持关节空间单步控制。
-3. 在 RViz / FakeSystem 中验证四个关节都能独立动作。
-4. 加入摇杆连续控制。
-5. 接真实 controller 前降低速度和步长。
-6. 最后实现笛卡尔空间模式，复用 `PlanToPose` service。
-
-第一版验收标准：
-
-- `/trunk_robot/joy` 能正常输出手柄数据。
-- 按住 deadman 才能运动。
-- 松开 deadman 不再发送运动。
-- 可以选择 `trunk_joint1..4`。
-- 每次按键只移动固定小角度。
-- `/trunk_robot/joint_states` 随控制结果更新。
-- RViz 中模型随关节运动变化。
-- 不影响原有 `two_stage_planner_system` 和 `two_stage_planner_service`。
+`trunk_two_stage_planner` only provides planning capabilities such as `PlanToPose`.
 
 ---
 
@@ -1136,11 +903,13 @@ ros2 run trunk_two_stage_planner ik_joint_from_pose \
 
 ## RViz 中看什么
 
-启动工程系统后，重点查看两类显示：
+启动工程系统后，专用 RViz 配置默认使用 MoveIt MotionPlanning 面板，用于查看
+planning group、`display_planned_path` 动画和调试 marker。重点查看两类显示：
 
 ### 1. MotionPlanning
 
 这里会显示 manager 发布的 `display_planned_path`。
+planner 会在节点存活期间每 5 秒重发最近一次 `DisplayTrajectory`，因此 RViz 后启动或面板重连后仍能重新收到轨迹。
 
 你应该观察：
 
@@ -1171,7 +940,16 @@ ros2 run trunk_two_stage_planner ik_joint_from_pose \
 - `/trunk_robot/two_stage_debug_markers`
 - `/trunk_robot/two_stage_joint_trajectory`
 
-如果 RViz 中看不到轨迹或 marker，可以先检查这些 topic 是否有 publisher/subscriber。
+如果本机 Humble/RViz 组合再次出现 InteractiveMarker 插件冲突或 RViz segfault，可切换到备用轻量配置：
+
+```bash
+ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py \
+  system_rviz_config:=$(ros2 pkg prefix trunk_two_stage_planner)/share/trunk_two_stage_planner/config/two_stage_system_stable.rviz
+```
+
+备用配置只显示 `RobotModel` 和 `TwoStageDebug` marker，不显示 MoveIt 面板和轨迹动画。
+
+如果 RViz 中看不到模型或 marker，可以先检查这些 topic 是否有 publisher/subscriber。
 
 ---
 
@@ -1206,23 +984,26 @@ ros2 run trunk_two_stage_planner ik_joint_from_pose \
 - `Using load_yaml() directly is deprecated`
 - `The root link chassis_base_link has an inertia specified`
 - `No 3D sensor plugin(s) defined for octomap updates`
-- RViz plugin factory namespace collision
+- 默认 MotionPlanning RViz 插件可能出现 plugin factory namespace collision
 
 这些通常不是规划失败原因。排查规划主链路时，优先看 `[trunk_robot.two_stage_planner_system]` 日志。
 
 关键日志顺序通常是：
 
-1. `Using live joint state ...`
-2. `Solving two-stage algorithm target...`
-3. `Algorithm solved...`
-4. `Planning stage1 with MoveIt group 'stage1_group'...`
-5. `Connecting stage1 MoveGroupInterface to namespace '/trunk_robot'...`
-6. `Stage1 MoveGroupInterface connected.`
-7. `Stage1 computing Cartesian path ...`
-8. `Stage1 Cartesian fraction=...`
-9. `Stage1 planning succeeded.`
-10. `Planning stage2 with MoveIt group 'stage2_group'...`
-11. `Stage2 planning succeeded.`
+1. `Waiting up to ... for live joint state ...`
+2. `Received live joint state ...`
+3. `Using latest live joint state ...`
+4. `Solving two-stage algorithm target...`
+5. `Algorithm solved...`
+6. `Planning stage1 with MoveIt group 'stage1_group'...`
+7. `Connecting stage1 MoveGroupInterface to namespace '/trunk_robot'...`
+8. `Stage1 MoveGroupInterface connected.`
+9. `Stage1 computing Cartesian path ...`
+10. `Stage1 Cartesian fraction=...`
+11. `Stage1 planning succeeded.`
+12. `Planning stage2 with MoveIt group 'stage2_group'...`
+13. `Stage2 planning succeeded.`
+14. `FollowJointTrajectory execution succeeded ...`
 
 如果日志停在 `Planning stage1...` 附近：
 
