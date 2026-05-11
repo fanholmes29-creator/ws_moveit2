@@ -1,0 +1,2 @@
+This directory is kept as source CAD/URDF material for model migration only.
+The active ROS 2 description package is ../robot_model.
