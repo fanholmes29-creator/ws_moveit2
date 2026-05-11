@@ -1,4 +1,4 @@
-trunk_joystick_teleop:
+/**/trunk_joystick_teleop:
   ros__parameters:
     # Relative names are resolved under the node namespace.
     # With robot_namespace:=trunk_robot, these become:
