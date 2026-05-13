@@ -11,7 +11,8 @@
 - 订阅 `/trunk_robot/joy` 的手柄输入
 - 订阅 `/trunk_robot/joint_states` 的 trunk 关节状态
 - 优先订阅 `/trunk_robot/trunk_group_controller/controller_state` 的 controller actual state 作为当前关节反馈
-- 向 `/trunk_robot/trunk_group_controller/follow_joint_trajectory` 发送 `control_msgs/action/FollowJointTrajectory` goal
+- 默认向 `/trunk_robot/trunk_group_controller/joint_trajectory` 连续发布 `trajectory_msgs/msg/JointTrajectory`
+- 兼容 step 模式下仍可向 `/trunk_robot/trunk_group_controller/follow_joint_trajectory` 发送 `control_msgs/action/FollowJointTrajectory` goal
 - 在 RViz 中显示 trunk 模型，用于 FakeSystem/controller 验证
 
 笛卡尔空间遥操作和 mode manager 后续也会放在本 package 中实现。
@@ -66,6 +67,7 @@ ros2 launch trunk_configure demo.launch.py use_rviz:=false
 
 - `/trunk_robot/joint_states`
 - `/trunk_robot/trunk_group_controller/controller_state`
+- `/trunk_robot/trunk_group_controller/joint_trajectory`
 - `/trunk_robot/trunk_group_controller/follow_joint_trajectory`
 
 终端 2：启动手柄遥操作和 RViz。
@@ -87,6 +89,7 @@ ros2 launch trunk_teleop_control trunk_joystick_teleop_rviz.launch.py start_joy_
 
 ```bash
 ros2 action info /trunk_robot/trunk_group_controller/follow_joint_trajectory
+ros2 topic info /trunk_robot/trunk_group_controller/joint_trajectory -v
 ros2 topic info /trunk_robot/joint_states -v
 ros2 topic echo /trunk_robot/joint_states --once
 ros2 topic info /trunk_robot/trunk_group_controller/controller_state -v
@@ -98,8 +101,9 @@ ros2 node list
 期望结果：
 
 - `Action servers: 1`
+- `/trunk_robot/trunk_group_controller/joint_trajectory` 有一个 subscriber，continuous 模式下推摇杆时会收到短 `JointTrajectory` command
 - `/trunk_robot/joint_states` 至少有一个 publisher，并且消息中包含 `trunk_joint1..4`
-- `/trunk_robot/trunk_group_controller/controller_state` 有一个 publisher，且 `actual.positions` 会随 action goal 更新
+- `/trunk_robot/trunk_group_controller/controller_state` 有一个 publisher，且 `actual.positions` 会随 topic command 或 action goal 更新
 - `/trunk_robot/joy` 只有一个 publisher
 - 不应出现 `/trunk_robot/move_group`
 
@@ -120,8 +124,9 @@ ros2 node list
 
 - 按住 `L1` 作为 deadman
 - `L1 + A/B/X/Y` 选择 `trunk_joint1..4`
-- 左摇杆上/下推一次，发送一次正向/反向单步目标
-- 摇杆采用 rising-edge 触发，长时间推住不会连续发送 goal
+- 默认 `control_mode: continuous`：左摇杆上/下持续推动时，当前选中关节会按摇杆幅值连续运动；松开摇杆或松开 `L1` 后停止发布运动命令
+- `max_velocity_rad_s` 限制最大关节速度，`axis_deadzone` 过滤摇杆零位附近的小抖动，`command_state_max_error_rad` 用于防止内部积分目标相对当前反馈漂移过远
+- 兼容 `control_mode: step`：左摇杆上/下跨过 `axis_step_threshold` 时发送一次正向/反向单步 action goal，行为与旧版 rising-edge 模式一致
 
 ## Package 边界
 

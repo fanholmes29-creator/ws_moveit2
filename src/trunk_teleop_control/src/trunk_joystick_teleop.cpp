@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -33,10 +34,19 @@ public:
     use_controller_state_ = declare_parameter<bool>("use_controller_state", true);
     follow_joint_trajectory_action_ = declare_parameter<std::string>(
       "follow_joint_trajectory_action", "trunk_group_controller/follow_joint_trajectory");
+    joint_trajectory_topic_ = declare_parameter<std::string>(
+      "joint_trajectory_topic", "trunk_group_controller/joint_trajectory");
     joint_names_ = declare_parameter<std::vector<std::string>>(
       "joint_names",
       {"trunk_joint1", "trunk_joint2", "trunk_joint3", "trunk_joint4"});
 
+    control_mode_ = declare_parameter<std::string>("control_mode", "step");
+    control_rate_ = declare_parameter<double>("control_rate", 20.0);
+    max_velocity_rad_s_ = declare_parameter<double>("max_velocity_rad_s", 0.25);
+    command_duration_ = declare_parameter<double>("command_duration", 0.15);
+    axis_deadzone_ = declare_parameter<double>("axis_deadzone", 0.15);
+    command_state_max_error_rad_ = declare_parameter<double>(
+      "command_state_max_error_rad", 0.2);
     step_rad_ = declare_parameter<double>("step_rad", 0.034906585);
     trajectory_duration_ = declare_parameter<double>("trajectory_duration", 0.5);
     joy_timeout_ = declare_parameter<double>("joy_timeout", 0.5);
@@ -65,8 +75,61 @@ public:
     q_current_.assign(joint_names_.size(), 0.0);
     selected_joint_index_ = 0;
 
-    action_client_ = rclcpp_action::create_client<FollowJointTrajectory>(
-      this, follow_joint_trajectory_action_);
+    if (control_mode_ != "step" && control_mode_ != "continuous") {
+      RCLCPP_WARN(
+        get_logger(),
+        "Invalid control_mode '%s'; falling back to 'step'. Expected 'step' or 'continuous'.",
+        control_mode_.c_str());
+      control_mode_ = "step";
+    }
+    if (control_rate_ <= 0.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid control_rate %.3f; falling back to 20.0 Hz.", control_rate_);
+      control_rate_ = 20.0;
+    }
+    if (command_duration_ <= 0.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid command_duration %.3f; falling back to 0.15 s.",
+        command_duration_);
+      command_duration_ = 0.15;
+    }
+    if (max_velocity_rad_s_ < 0.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid max_velocity_rad_s %.3f; using its absolute value.",
+        max_velocity_rad_s_);
+      max_velocity_rad_s_ = std::abs(max_velocity_rad_s_);
+    }
+    if (axis_deadzone_ < 0.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid axis_deadzone %.3f; using its absolute value.", axis_deadzone_);
+      axis_deadzone_ = std::abs(axis_deadzone_);
+    }
+    if (command_state_max_error_rad_ < 0.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid command_state_max_error_rad %.3f; using its absolute value.",
+        command_state_max_error_rad_);
+      command_state_max_error_rad_ = std::abs(command_state_max_error_rad_);
+    }
+
+    if (control_mode_ == "step") {
+      action_client_ = rclcpp_action::create_client<FollowJointTrajectory>(
+        this, follow_joint_trajectory_action_);
+      RCLCPP_INFO(
+        get_logger(), "Using step control mode with FollowJointTrajectory action '%s'.",
+        follow_joint_trajectory_action_.c_str());
+    } else {
+      // Continuous teleop streams short position trajectories directly to the controller topic.
+      // This avoids waiting on action results while the joystick is held.
+      trajectory_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+        joint_trajectory_topic_, rclcpp::SystemDefaultsQoS());
+      const auto control_period = std::chrono::duration<double>(1.0 / control_rate_);
+      control_timer_ = create_wall_timer(
+        control_period, std::bind(&TrunkJoystickTeleop::controlTimerCallback, this));
+      RCLCPP_INFO(
+        get_logger(),
+        "Using continuous control mode at %.3f Hz, publishing JointTrajectory to '%s'.",
+        control_rate_, joint_trajectory_topic_.c_str());
+    }
 
     joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
       joy_topic_, rclcpp::SystemDefaultsQoS(),
@@ -163,9 +226,14 @@ private:
     }
 
     last_joy_time_ = now();
+    latest_joy_stamp_ = last_joy_time_;
+    // Continuous mode consumes the latest joystick sample from the control timer.
+    // Step mode still uses this callback's rising-edge detection below.
+    latest_joy_ = msg;
     has_joy_ = true;
 
     const bool deadman_pressed = isButtonPressed(*msg, button_l1_);
+    latest_deadman_pressed_ = deadman_pressed;
     const bool motion_enabled = !require_deadman_ || deadman_pressed;
 
     const bool a_pressed = isButtonPressed(*msg, button_a_);
@@ -210,11 +278,14 @@ private:
         selectJoint(3);
       }
 
-      if (isRisingEdge(axis_positive, previous_axis_positive_)) {
-        sendStepGoal(1.0);
-      }
-      if (isRisingEdge(axis_negative, previous_axis_negative_)) {
-        sendStepGoal(-1.0);
+      if (control_mode_ == "step") {
+        // Compatibility path: one joystick edge still sends one FollowJointTrajectory goal.
+        if (isRisingEdge(axis_positive, previous_axis_positive_)) {
+          sendStepGoal(1.0);
+        }
+        if (isRisingEdge(axis_negative, previous_axis_negative_)) {
+          sendStepGoal(-1.0);
+        }
       }
     }
 
@@ -224,6 +295,119 @@ private:
     previous_y_pressed_ = y_pressed;
     previous_axis_positive_ = axis_positive;
     previous_axis_negative_ = axis_negative;
+  }
+
+  void controlTimerCallback()
+  {
+    if (control_mode_ != "continuous") {
+      return;
+    }
+    if (!latest_joy_) {
+      return;
+    }
+
+    const rclcpp::Time tick_time = now();
+    const double joy_age_sec = (tick_time - latest_joy_stamp_).seconds();
+    if (joy_age_sec > joy_timeout_) {
+      q_command_initialized_ = false;
+      last_control_time_ = tick_time;
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Joy input timeout in continuous mode: latest Joy is %.3f seconds old, timeout is %.3f.",
+        joy_age_sec, joy_timeout_);
+      return;
+    }
+
+    if (require_deadman_ && !latest_deadman_pressed_) {
+      q_command_initialized_ = false;
+      last_control_time_ = tick_time;
+      return;
+    }
+    if (!has_joint_state_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Cannot publish continuous command before receiving valid joint states.");
+      last_control_time_ = tick_time;
+      return;
+    }
+    if (selected_joint_index_ >= joint_names_.size()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Cannot publish continuous command because selected joint index is out of range.");
+      last_control_time_ = tick_time;
+      return;
+    }
+
+    bool axis_valid = false;
+    double axis_step_value = axisValue(*latest_joy_, axis_step_, axis_valid);
+    if (!axis_valid) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Joy axis_step index %d is out of range for axes size %zu.",
+        axis_step_, latest_joy_->axes.size());
+      last_control_time_ = tick_time;
+      return;
+    }
+    if (invert_axis_step_) {
+      axis_step_value = -axis_step_value;
+    }
+
+    if (std::abs(axis_step_value) < axis_deadzone_) {
+      // Keep the next continuous command anchored to controller feedback after the stick rests.
+      q_command_ = q_current_;
+      q_command_initialized_ = false;
+      last_control_time_ = tick_time;
+      return;
+    }
+
+    if (!q_command_initialized_) {
+      q_command_ = q_current_;
+      q_command_initialized_ = true;
+    }
+
+    if (q_command_.size() != joint_names_.size()) {
+      q_command_ = q_current_;
+    }
+
+    const double command_state_error =
+      std::abs(q_command_[selected_joint_index_] - q_current_[selected_joint_index_]);
+    if (command_state_error > command_state_max_error_rad_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Continuous command state error %.3f rad exceeds limit %.3f rad; resetting command state.",
+        command_state_error, command_state_max_error_rad_);
+      q_command_ = q_current_;
+    }
+
+    // Use measured timer spacing so short scheduling delays do not change the commanded speed.
+    double dt = 1.0 / control_rate_;
+    if (last_control_time_.nanoseconds() > 0) {
+      const double measured_dt = (tick_time - last_control_time_).seconds();
+      if (measured_dt > 0.0) {
+        dt = measured_dt;
+      }
+    }
+    last_control_time_ = tick_time;
+
+    // Integrate joystick deflection into a bounded position command for the selected joint.
+    q_command_[selected_joint_index_] += axis_step_value * max_velocity_rad_s_ * dt;
+    q_command_[selected_joint_index_] = std::clamp(
+      q_command_[selected_joint_index_],
+      joint_min_limits_[selected_joint_index_],
+      joint_max_limits_[selected_joint_index_]);
+
+    trajectory_msgs::msg::JointTrajectory trajectory;
+    trajectory.joint_names = joint_names_;
+    trajectory.points.resize(1);
+    trajectory.points[0].positions = q_command_;
+    trajectory.points[0].time_from_start = secondsToDurationMsg(command_duration_);
+
+    trajectory_pub_->publish(trajectory);
+    RCLCPP_DEBUG(
+      get_logger(),
+      "Published continuous command: selected_joint=%s axis=%.3f dt=%.3f q_command=%s",
+      joint_names_[selected_joint_index_].c_str(), axis_step_value, dt,
+      vectorToString(q_command_).c_str());
   }
 
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
@@ -454,6 +638,14 @@ private:
     RCLCPP_INFO(
       get_logger(), "  follow_joint_trajectory_action: %s",
       follow_joint_trajectory_action_.c_str());
+    RCLCPP_INFO(get_logger(), "  joint_trajectory_topic: %s", joint_trajectory_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "  control_mode: %s", control_mode_.c_str());
+    RCLCPP_INFO(get_logger(), "  control_rate: %.3f", control_rate_);
+    RCLCPP_INFO(get_logger(), "  max_velocity_rad_s: %.3f", max_velocity_rad_s_);
+    RCLCPP_INFO(get_logger(), "  command_duration: %.3f", command_duration_);
+    RCLCPP_INFO(get_logger(), "  axis_deadzone: %.3f", axis_deadzone_);
+    RCLCPP_INFO(
+      get_logger(), "  command_state_max_error_rad: %.3f", command_state_max_error_rad_);
     RCLCPP_INFO(get_logger(), "  joint_names: %s", vectorToStringNames(joint_names_).c_str());
     RCLCPP_INFO(get_logger(), "  step_rad: %.9f", step_rad_);
     RCLCPP_INFO(get_logger(), "  trajectory_duration: %.3f", trajectory_duration_);
@@ -478,15 +670,24 @@ private:
   rclcpp::Subscription<control_msgs::msg::JointTrajectoryControllerState>::SharedPtr
     controller_state_sub_;
   rclcpp_action::Client<FollowJointTrajectory>::SharedPtr action_client_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr trajectory_pub_;
+  rclcpp::TimerBase::SharedPtr control_timer_;
 
   std::string joy_topic_;
   std::string joint_states_topic_;
   std::string controller_state_topic_;
   std::string follow_joint_trajectory_action_;
+  std::string joint_trajectory_topic_;
+  std::string control_mode_;
   std::vector<std::string> joint_names_;
   std::vector<double> joint_min_limits_;
   std::vector<double> joint_max_limits_;
 
+  double control_rate_{20.0};
+  double max_velocity_rad_s_{0.25};
+  double command_duration_{0.15};
+  double axis_deadzone_{0.15};
+  double command_state_max_error_rad_{0.2};
   double step_rad_{0.034906585};
   double trajectory_duration_{0.5};
   double joy_timeout_{0.5};
@@ -503,7 +704,9 @@ private:
   bool invert_axis_step_{false};
 
   std::vector<double> q_current_;
+  std::vector<double> q_command_;
   std::size_t selected_joint_index_{0};
+  bool q_command_initialized_{false};
 
   bool previous_a_pressed_{false};
   bool previous_b_pressed_{false};
@@ -513,6 +716,10 @@ private:
   bool previous_axis_negative_{false};
 
   rclcpp::Time last_joy_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time latest_joy_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_control_time_{0, 0, RCL_ROS_TIME};
+  sensor_msgs::msg::Joy::SharedPtr latest_joy_;
+  bool latest_deadman_pressed_{false};
   bool has_joy_{false};
   bool has_joint_state_{false};
   bool goal_active_{false};

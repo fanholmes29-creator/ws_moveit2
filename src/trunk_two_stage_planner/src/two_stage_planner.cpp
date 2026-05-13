@@ -238,11 +238,12 @@ std::vector<double> TwoStagePlanner::composeStage1State(
   double q4_fix) const
 {
   // trunk 场景特定 stage1 规则：
-  // q3 跟随 q1+q2 耦合；q4 固定为起始阶段值。
+  // 新 trunk 模型的前三个主动关节轴方向一致，q3 需要抵消 q1/q2 的累计弯曲。
+  // 这让 stage1 预备态保持“挺直”语义，而不是继续同向叠加弯曲。
   std::vector<double> q(kinematics_.getJointNames().size(), 0.0);
   q[idx_q1_] = q1;
   q[idx_q2_] = q2;
-  q[idx_q3_] = q1 + q2;
+  q[idx_q3_] = -(q1 + q2);
   q[idx_q4_] = q4_fix;
   return q;
 }
