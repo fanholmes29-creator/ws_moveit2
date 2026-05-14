@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cctype>
 #include <cstdint>
 #include <sstream>
 #include <string>
@@ -16,6 +17,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "sensor_msgs/msg/joy.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 
 class TrunkJoystickTeleop : public rclcpp::Node
@@ -51,6 +53,11 @@ public:
     trajectory_duration_ = declare_parameter<double>("trajectory_duration", 0.5);
     joy_timeout_ = declare_parameter<double>("joy_timeout", 0.5);
     require_deadman_ = declare_parameter<bool>("require_deadman", true);
+    require_control_mode_ = declare_parameter<bool>("require_control_mode", true);
+    control_mode_state_topic_ = declare_parameter<std::string>(
+      "control_mode_state_topic", "control_mode_state");
+    manual_control_mode_ = normalizeMode(
+      declare_parameter<std::string>("manual_control_mode", "manual_teleop"));
 
     button_a_ = declare_parameter<int>("button_a", 0);
     button_b_ = declare_parameter<int>("button_b", 1);
@@ -147,6 +154,10 @@ public:
             &TrunkJoystickTeleop::controllerStateCallback, this, std::placeholders::_1));
     }
 
+    control_mode_sub_ = create_subscription<std_msgs::msg::String>(
+      control_mode_state_topic_, rclcpp::QoS(1).transient_local().reliable(),
+      std::bind(&TrunkJoystickTeleop::controlModeStateCallback, this, std::placeholders::_1));
+
     logParameters();
   }
 
@@ -211,6 +222,28 @@ private:
     return current && !previous;
   }
 
+  static std::string normalizeMode(std::string mode)
+  {
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return mode;
+  }
+
+  bool isManualTeleopEnabled() const
+  {
+    if (!require_control_mode_) {
+      return true;
+    }
+    return has_control_mode_state_ && current_control_mode_ == manual_control_mode_;
+  }
+
+  void resetContinuousCommandState()
+  {
+    q_command_initialized_ = false;
+    q_command_.clear();
+  }
+
   std::string selectedJointName() const
   {
     if (selected_joint_index_ < joint_names_.size()) {
@@ -235,6 +268,7 @@ private:
     const bool deadman_pressed = isButtonPressed(*msg, button_l1_);
     latest_deadman_pressed_ = deadman_pressed;
     const bool motion_enabled = !require_deadman_ || deadman_pressed;
+    const bool manual_enabled = isManualTeleopEnabled();
 
     const bool a_pressed = isButtonPressed(*msg, button_a_);
     const bool b_pressed = isButtonPressed(*msg, button_b_);
@@ -278,7 +312,7 @@ private:
         selectJoint(3);
       }
 
-      if (control_mode_ == "step") {
+      if (control_mode_ == "step" && manual_enabled) {
         // Compatibility path: one joystick edge still sends one FollowJointTrajectory goal.
         if (isRisingEdge(axis_positive, previous_axis_positive_)) {
           sendStepGoal(1.0);
@@ -307,9 +341,21 @@ private:
     }
 
     const rclcpp::Time tick_time = now();
+    if (!isManualTeleopEnabled()) {
+      resetContinuousCommandState();
+      last_control_time_ = tick_time;
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Continuous teleop output disabled because control mode is '%s' "
+        "(required '%s', has_state=%s).",
+        current_control_mode_.c_str(), manual_control_mode_.c_str(),
+        has_control_mode_state_ ? "true" : "false");
+      return;
+    }
+
     const double joy_age_sec = (tick_time - latest_joy_stamp_).seconds();
     if (joy_age_sec > joy_timeout_) {
-      q_command_initialized_ = false;
+      resetContinuousCommandState();
       last_control_time_ = tick_time;
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -319,7 +365,7 @@ private:
     }
 
     if (require_deadman_ && !latest_deadman_pressed_) {
-      q_command_initialized_ = false;
+      resetContinuousCommandState();
       last_control_time_ = tick_time;
       return;
     }
@@ -355,7 +401,7 @@ private:
     if (std::abs(axis_step_value) < axis_deadzone_) {
       // Keep the next continuous command anchored to controller feedback after the stick rests.
       q_command_ = q_current_;
-      q_command_initialized_ = false;
+      resetContinuousCommandState();
       last_control_time_ = tick_time;
       return;
     }
@@ -486,6 +532,24 @@ private:
 
     q_current_ = std::move(q_current);
     has_joint_state_ = true;
+  }
+
+  void controlModeStateCallback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    if (!msg) {
+      return;
+    }
+    const std::string mode = normalizeMode(msg->data);
+    if (!has_control_mode_state_ || mode != current_control_mode_) {
+      RCLCPP_INFO(
+        get_logger(), "Received control mode state: '%s' (manual required: '%s').",
+        mode.c_str(), manual_control_mode_.c_str());
+    }
+    current_control_mode_ = mode;
+    has_control_mode_state_ = true;
+    if (!isManualTeleopEnabled()) {
+      resetContinuousCommandState();
+    }
   }
 
   void selectJoint(std::size_t index)
@@ -652,6 +716,12 @@ private:
     RCLCPP_INFO(get_logger(), "  joy_timeout: %.3f", joy_timeout_);
     RCLCPP_INFO(get_logger(), "  require_deadman: %s", require_deadman_ ? "true" : "false");
     RCLCPP_INFO(
+      get_logger(), "  require_control_mode: %s",
+      require_control_mode_ ? "true" : "false");
+    RCLCPP_INFO(
+      get_logger(), "  control_mode_state_topic: %s", control_mode_state_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "  manual_control_mode: %s", manual_control_mode_.c_str());
+    RCLCPP_INFO(
       get_logger(),
       "  mapping: A=%d B=%d X=%d Y=%d L1=%d axis_step=%d axis_step_threshold=%.3f "
       "invert_axis_step=%s",
@@ -669,6 +739,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   rclcpp::Subscription<control_msgs::msg::JointTrajectoryControllerState>::SharedPtr
     controller_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_mode_sub_;
   rclcpp_action::Client<FollowJointTrajectory>::SharedPtr action_client_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr trajectory_pub_;
   rclcpp::TimerBase::SharedPtr control_timer_;
@@ -679,6 +750,8 @@ private:
   std::string follow_joint_trajectory_action_;
   std::string joint_trajectory_topic_;
   std::string control_mode_;
+  std::string control_mode_state_topic_;
+  std::string manual_control_mode_{"manual_teleop"};
   std::vector<std::string> joint_names_;
   std::vector<double> joint_min_limits_;
   std::vector<double> joint_max_limits_;
@@ -692,6 +765,7 @@ private:
   double trajectory_duration_{0.5};
   double joy_timeout_{0.5};
   bool require_deadman_{true};
+  bool require_control_mode_{true};
   bool use_controller_state_{true};
 
   int button_a_{0};
@@ -722,7 +796,9 @@ private:
   bool latest_deadman_pressed_{false};
   bool has_joy_{false};
   bool has_joint_state_{false};
+  bool has_control_mode_state_{false};
   bool goal_active_{false};
+  std::string current_control_mode_{"idle"};
 };
 
 int main(int argc, char ** argv)

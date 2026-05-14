@@ -46,6 +46,10 @@
     joy_timeout: 0.5
     # 是否要求按住 deadman 键才允许运动。
     require_deadman: true
+    # 控制源仲裁：只有 control_mode_state 为 manual_teleop 时才允许输出运动命令。
+    require_control_mode: true
+    control_mode_state_topic: "control_mode_state"
+    manual_control_mode: "manual_teleop"
 
     # Yahboom 手柄按键索引：
     #   buttons[0]  -> A

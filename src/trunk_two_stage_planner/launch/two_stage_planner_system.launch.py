@@ -46,6 +46,8 @@ def generate_launch_description():
             DeclareLaunchArgument("manager_delay_sec", default_value="60.0"),
             DeclareLaunchArgument("joint_state_wait_timeout_sec", default_value="120.0"),
             DeclareLaunchArgument("robot_namespace", default_value="trunk_robot"),
+            DeclareLaunchArgument("start_control_mode_manager", default_value="true"),
+            DeclareLaunchArgument("initial_control_mode", default_value="auto_plan_execute"),
             GroupAction(
                 [
                     PushRosNamespace(robot_namespace),
@@ -54,6 +56,25 @@ def generate_launch_description():
                             os.path.join(trunk_config_share, "launch", "demo.launch.py")
                         ),
                         launch_arguments={"use_rviz": "false"}.items(),
+                    ),
+                    Node(
+                        package="trunk_teleop_control",
+                        executable="control_mode_manager",
+                        name="control_mode_manager",
+                        output="screen",
+                        condition=IfCondition(
+                            LaunchConfiguration("start_control_mode_manager")
+                        ),
+                        parameters=[
+                            {
+                                "initial_mode": LaunchConfiguration("initial_control_mode"),
+                                "state_topic": "control_mode_state",
+                                "set_mode_service": "set_control_mode",
+                                "follow_joint_trajectory_action": (
+                                    "trunk_group_controller/follow_joint_trajectory"
+                                ),
+                            }
+                        ],
                     ),
                     # RViz 启动较重，延后加载可避免干扰 controller spawner 和 planner 起步。
                     TimerAction(

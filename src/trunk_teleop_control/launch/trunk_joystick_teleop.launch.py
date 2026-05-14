@@ -24,6 +24,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("robot_namespace", default_value="trunk_robot"),
             DeclareLaunchArgument("start_joy_node", default_value="true"),
+            DeclareLaunchArgument("start_control_mode_manager", default_value="true"),
+            DeclareLaunchArgument("initial_control_mode", default_value="manual_teleop"),
             DeclareLaunchArgument("joy_device_id", default_value="0"),
             DeclareLaunchArgument("joy_deadzone", default_value="0.05"),
             DeclareLaunchArgument("joy_autorepeat_rate", default_value="20.0"),
@@ -46,6 +48,24 @@ def generate_launch_description():
                         ),
                         "autorepeat_rate": ParameterValue(
                             LaunchConfiguration("joy_autorepeat_rate"), value_type=float
+                        ),
+                    }
+                ],
+            ),
+            Node(
+                package="trunk_teleop_control",
+                executable="control_mode_manager",
+                name="control_mode_manager",
+                namespace=LaunchConfiguration("robot_namespace"),
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("start_control_mode_manager")),
+                parameters=[
+                    {
+                        "initial_mode": LaunchConfiguration("initial_control_mode"),
+                        "state_topic": "control_mode_state",
+                        "set_mode_service": "set_control_mode",
+                        "follow_joint_trajectory_action": (
+                            "trunk_group_controller/follow_joint_trajectory"
                         ),
                     }
                 ],

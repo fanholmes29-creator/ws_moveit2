@@ -42,6 +42,16 @@ def generate_launch_description():
                 description="Whether to start joy_node in robot namespace.",
             ),
             DeclareLaunchArgument(
+                "start_control_mode_manager",
+                default_value="true",
+                description="Whether to start control_mode_manager in robot namespace.",
+            ),
+            DeclareLaunchArgument(
+                "initial_control_mode",
+                default_value="manual_teleop",
+                description="Initial control mode published by control_mode_manager.",
+            ),
+            DeclareLaunchArgument(
                 "start_rsp",
                 default_value="true",
                 description=(
@@ -75,6 +85,24 @@ def generate_launch_description():
                         ),
                         "autorepeat_rate": ParameterValue(
                             LaunchConfiguration("joy_autorepeat_rate"), value_type=float
+                        ),
+                    }
+                ],
+            ),
+            Node(
+                package="trunk_teleop_control",
+                executable="control_mode_manager",
+                name="control_mode_manager",
+                namespace=LaunchConfiguration("robot_namespace"),
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("start_control_mode_manager")),
+                parameters=[
+                    {
+                        "initial_mode": LaunchConfiguration("initial_control_mode"),
+                        "state_topic": "control_mode_state",
+                        "set_mode_service": "set_control_mode",
+                        "follow_joint_trajectory_action": (
+                            "trunk_group_controller/follow_joint_trajectory"
                         ),
                     }
                 ],

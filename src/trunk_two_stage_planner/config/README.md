@@ -85,6 +85,10 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
   - `follow_joint_trajectory_action`：控制器 action 名称
   - `execute_action_server_wait_sec`：等待 action server 可用的最长时间
   - `execute_result_wait_sec`：等待控制器执行结果的最长时间
+  - `require_control_mode`：执行 action 前是否要求控制源模式门控
+  - `control_mode_state_topic`：控制模式状态 topic
+  - `auto_control_mode`：允许 planner 执行 action 的模式名
+  - `control_mode_wait_timeout_sec`：等待控制模式状态的最长时间
 
 - **输出**
   - `output_dir`
@@ -101,6 +105,7 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
 - 默认 `joint_state_wait_timeout_sec: 120.0`，用于覆盖 controller manager / joint state broadcaster 启动较慢的情况。
 - 若启动初期 `joint_states` 仍可能有延迟，请继续调大 `joint_state_wait_timeout_sec`；`allow_start_state_fallback_to_config` 只适合 planning-only 模式兜底。
 - 若你只是想先把轨迹给同事而不立刻执行到底层，可关闭 `execute_joint_trajectory`，只保留标准 `JointTrajectory` 输出。
+- 若 `execute_joint_trajectory: true` 且 `require_control_mode: true`，当前模式必须是 `auto_plan_execute`；否则系统只规划和发布轨迹，不发送 `FollowJointTrajectory` action。
 - 若你要直接和 `ros2_control` 控制器联调，则应确认 `follow_joint_trajectory_action` 与控制器配置一致。
 - 多机器人网络里不要把 `joint_states_topic` 改成 `/joint_states`；除非你明确知道全局 topic 只有 trunk 一个发布者。
 

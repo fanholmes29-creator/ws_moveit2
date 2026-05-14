@@ -12,6 +12,7 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -69,6 +70,10 @@ struct TwoStageSystemConfig
   std::string follow_joint_trajectory_action = "trunk_group_controller/follow_joint_trajectory";
   double execute_action_server_wait_sec = 5.0;
   double execute_result_wait_sec = 30.0;
+  bool require_control_mode = true;
+  std::string control_mode_state_topic = "control_mode_state";
+  std::string auto_control_mode = "auto_plan_execute";
+  double control_mode_wait_timeout_sec = 1.0;
 
   bool export_csv = false;
   std::string output_dir = "csv/two_stage_system";
@@ -145,8 +150,11 @@ private:
     const moveit_msgs::msg::RobotTrajectory& stage2_traj) const;
   bool executeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) const;
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+  void controlModeStateCallback(const std_msgs::msg::String::SharedPtr msg);
   bool getCurrentJointState(std::vector<double>& q_current) const;
   bool waitForCurrentJointState(std::vector<double>& q_current) const;
+  bool waitForControlModeState() const;
+  bool isAutoExecutionAllowed() const;
   void republishLatestDisplayTrajectory() const;
 
   rclcpp::Node::SharedPtr node_;
@@ -162,11 +170,15 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr joint_traj_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_mode_sub_;
   rclcpp::TimerBase::SharedPtr display_republish_timer_;
   mutable std::mutex joint_state_mutex_;
   std::vector<double> latest_joint_state_;
   bool has_latest_joint_state_ = false;
   bool logged_first_joint_state_ = false;
+  mutable std::mutex control_mode_mutex_;
+  std::string latest_control_mode_ = "idle";
+  bool has_control_mode_state_ = false;
   mutable std::mutex display_trajectory_mutex_;
   mutable moveit_msgs::msg::DisplayTrajectory latest_display_trajectory_;
   mutable bool has_latest_display_trajectory_ = false;

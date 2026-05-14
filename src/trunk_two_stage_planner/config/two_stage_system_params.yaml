@@ -19,8 +19,9 @@
     reference_link_name: "trunk_link4"
     planning_frame: "chassis_base_link"
 
-    q_start: [0.4, 0.4, 0.4, 0.4]
-    goal_joint_target: [-1.0, 1.0, 0.7, 0.6]
+
+    q_start: [0.4, 0.4, -0.8, 0.4]
+    goal_joint_target: [-1.1, 1.3, 0.4, 0.2]
     q_goal_fallback: [-1.0, 1.5, 0.7, 0.6]
     # 目标策略开关：
     # true -> 由 goal_joint_target 的 FK 推导目标位姿
@@ -97,6 +98,12 @@
     follow_joint_trajectory_action: "trunk_group_controller/follow_joint_trajectory"
     execute_action_server_wait_sec: 5.0
     execute_result_wait_sec: 30.0
+    # 控制源仲裁：只有 control_mode_state 为 auto_plan_execute 时才允许执行 action。
+    # 非 auto 模式仍允许规划、发布可视化和 two_stage_joint_trajectory，但不执行到底层 controller。
+    require_control_mode: true
+    control_mode_state_topic: "control_mode_state"
+    auto_control_mode: "auto_plan_execute"
+    control_mode_wait_timeout_sec: 1.0
 
     marker_topic: "two_stage_debug_markers"
     display_trajectory_topic: "display_planned_path"

@@ -414,7 +414,7 @@ J_{\text{ik}}
 - 从起点和目标位姿出发完成两阶段规划
 - 输出可视化轨迹和调试数据
 - 输出完整 `trajectory_msgs/msg/JointTrajectory`
-- 可选将完整轨迹作为 `FollowJointTrajectory` goal 发给 `ros2_control`
+- 在控制模式为 `auto_plan_execute` 时，可选将完整轨迹作为 `FollowJointTrajectory` goal 发给 `ros2_control`
 - 给上层提供目标位姿请求接口
 
 当前包默认**不负责**：
@@ -426,6 +426,7 @@ J_{\text{ik}}
 
 - 当前版本已经支持将拼接后的完整轨迹直接发送到 `ros2_control` 的 `FollowJointTrajectory` action。
 - 但当前默认底层仍然是 FakeSystem / mock controller 联调环境，不应直接等同于真实硬件闭环能力。
+- 若 `execute_joint_trajectory: true`，执行前还必须收到 `control_mode_state=auto_plan_execute`；否则只规划、发布可视化/轨迹 topic，不发送 action goal。
 
 ---
 
@@ -848,6 +849,37 @@ ros2 launch trunk_teleop_control trunk_teleop_ros2_control_rviz.launch.py \
 ```
 
 `trunk_two_stage_planner` only provides planning capabilities such as `PlanToPose`.
+
+## Control Source Boundary
+
+`trunk_two_stage_planner` 和 `trunk_teleop_control` 最终都可能连接到同一个 `trunk_group_controller`，但它们是互斥控制源：
+
+```text
+manual_teleop:
+joy -> trunk_joystick_teleop -> joint_trajectory topic -> trunk_group_controller
+
+auto_plan_execute:
+上位机 / PlanToPose -> trunk_two_stage_planner -> FollowJointTrajectory action -> trunk_group_controller
+```
+
+两条链路不能同时输出。`manual_teleop` 模式下只允许手柄输出；`auto_plan_execute` 模式下只允许本包发送完整规划轨迹。`idle` / `estop` 模式下，本包不会执行 action，手柄也不会输出运动命令。
+
+本包的执行门控参数位于 `two_stage_system_params.yaml`：
+
+- `require_control_mode: true`
+- `control_mode_state_topic: "control_mode_state"`
+- `auto_control_mode: "auto_plan_execute"`
+- `control_mode_wait_timeout_sec: 1.0`
+
+当 `execute_joint_trajectory: true` 但当前模式不是 `auto_plan_execute` 时，planner 仍会完成规划、发布 `display_planned_path` 和 `two_stage_joint_trajectory`，但不会调用 `FollowJointTrajectory` action。这保留了“只规划不执行”的能力，也避免 planner 与手柄 continuous command 抢 controller。
+
+切换到自动执行前，应通过 mode manager 或上位机设置：
+
+```bash
+ros2 service call /trunk_robot/set_control_mode trunk_teleop_control/srv/SetControlMode "{mode: auto_plan_execute}"
+```
+
+需要人工接管时，应先切回 `manual_teleop`。mode manager 会请求取消当前 `FollowJointTrajectory` goal，然后手柄 teleop 会从最新关节反馈重新初始化 continuous command。
 
 ---
 

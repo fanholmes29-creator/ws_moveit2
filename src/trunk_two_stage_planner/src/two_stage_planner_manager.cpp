@@ -49,6 +49,14 @@ std::string joinDoubles(const std::vector<double>& values)
   return oss.str();
 }
 
+std::string normalizeMode(std::string mode)
+{
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return mode;
+}
+
 struct JointStateValidationResult
 {
   bool accepted = false;
@@ -246,6 +254,7 @@ bool TwoStagePlannerManager::initialize(
   // 该方法完成依赖装配与运行时发布器初始化。
   algorithm_config_ = algorithm_config;
   system_config_ = system_config;
+  system_config_.auto_control_mode = normalizeMode(system_config_.auto_control_mode);
 
   if (!kinematics_.initialize(node_, algorithm_config_)) {
     return false;
@@ -287,6 +296,10 @@ bool TwoStagePlannerManager::initialize(
     system_config_.joint_states_topic,
     rclcpp::SensorDataQoS(),
     std::bind(&TwoStagePlannerManager::jointStateCallback, this, std::placeholders::_1));
+  control_mode_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    system_config_.control_mode_state_topic,
+    rclcpp::QoS(1).transient_local().reliable(),
+    std::bind(&TwoStagePlannerManager::controlModeStateCallback, this, std::placeholders::_1));
   display_republish_timer_ = node_->create_wall_timer(
     std::chrono::seconds(5),
     std::bind(&TwoStagePlannerManager::republishLatestDisplayTrajectory, this));
@@ -424,7 +437,21 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
   const auto merged_joint_trajectory =
     concatenateJointTrajectories(stage1_traj, stage2_plan.trajectory_);
   joint_traj_pub_->publish(merged_joint_trajectory);
-  if (system_config_.execute_joint_trajectory && !executeJointTrajectory(merged_joint_trajectory)) {
+  bool execution_skipped_by_control_mode = false;
+  const bool execution_allowed_by_mode =
+    !system_config_.execute_joint_trajectory || isAutoExecutionAllowed();
+  if (system_config_.execute_joint_trajectory && !execution_allowed_by_mode) {
+    execution_skipped_by_control_mode = true;
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Planning succeeded and trajectory was published, but FollowJointTrajectory execution was "
+      "skipped because control mode is not '%s'.",
+      system_config_.auto_control_mode.c_str());
+  }
+  if (
+    system_config_.execute_joint_trajectory && execution_allowed_by_mode &&
+    !executeJointTrajectory(merged_joint_trajectory))
+  {
     RCLCPP_ERROR(node_->get_logger(), "Failed to execute merged joint trajectory.");
     return PlannerResult::fail(
       PlannerError::TrajectoryExecutionFailed,
@@ -481,6 +508,12 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
     exportStage1HeatmapCsv(system_config_.output_dir + "/stage1_heatmap.csv", summary.heatmap_samples);
   }
 
+  if (execution_skipped_by_control_mode) {
+    return PlannerResult::ok(
+      summary,
+      "Planning succeeded; execution skipped because control mode is not " +
+      system_config_.auto_control_mode + ".");
+  }
   return PlannerResult::ok(summary);
 }
 
@@ -1065,6 +1098,22 @@ void TwoStagePlannerManager::jointStateCallback(const sensor_msgs::msg::JointSta
   }
 }
 
+void TwoStagePlannerManager::controlModeStateCallback(const std_msgs::msg::String::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  const std::string mode = normalizeMode(msg->data);
+  std::lock_guard<std::mutex> lock(control_mode_mutex_);
+  if (!has_control_mode_state_ || latest_control_mode_ != mode) {
+    RCLCPP_INFO(
+      node_->get_logger(), "Received control mode state: '%s' (auto required: '%s').",
+      mode.c_str(), system_config_.auto_control_mode.c_str());
+  }
+  latest_control_mode_ = mode;
+  has_control_mode_state_ = true;
+}
+
 bool TwoStagePlannerManager::getCurrentJointState(std::vector<double>& q_current) const
 {
   std::lock_guard<std::mutex> lock(joint_state_mutex_);
@@ -1104,6 +1153,58 @@ bool TwoStagePlannerManager::waitForCurrentJointState(std::vector<double>& q_cur
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   return false;
+}
+
+bool TwoStagePlannerManager::waitForControlModeState() const
+{
+  if (!system_config_.require_control_mode) {
+    return true;
+  }
+
+  const double timeout_sec = std::max(0.0, system_config_.control_mode_wait_timeout_sec);
+  const auto wait_deadline =
+    std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_sec);
+  while (rclcpp::ok()) {
+    {
+      std::lock_guard<std::mutex> lock(control_mode_mutex_);
+      if (has_control_mode_state_) {
+        return true;
+      }
+    }
+
+    if (std::chrono::steady_clock::now() >= wait_deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return false;
+}
+
+bool TwoStagePlannerManager::isAutoExecutionAllowed() const
+{
+  if (!system_config_.require_control_mode) {
+    return true;
+  }
+  if (!waitForControlModeState()) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Refusing FollowJointTrajectory execution: no control mode state was received from '%s' "
+      "within %.2f s.",
+      system_config_.control_mode_state_topic.c_str(),
+      system_config_.control_mode_wait_timeout_sec);
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(control_mode_mutex_);
+  if (latest_control_mode_ != system_config_.auto_control_mode) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Refusing FollowJointTrajectory execution: current control mode is '%s', required '%s'.",
+      latest_control_mode_.c_str(),
+      system_config_.auto_control_mode.c_str());
+    return false;
+  }
+  return true;
 }
 
 }  // namespace trunk_two_stage_planner

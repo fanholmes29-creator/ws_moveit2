@@ -10,6 +10,7 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
@@ -40,6 +41,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -78,6 +80,7 @@ ament_target_dependencies(two_stage_planner_analysis_tool
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -99,6 +102,7 @@ ament_target_dependencies(two_stage_planner_system
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -120,6 +124,7 @@ ament_target_dependencies(fk_pose_from_joint
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -141,6 +146,7 @@ ament_target_dependencies(ik_joint_from_pose
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -162,6 +168,7 @@ ament_target_dependencies(two_stage_planner_service
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs

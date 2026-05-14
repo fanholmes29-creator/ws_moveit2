@@ -206,6 +206,11 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(
     node, "execute_action_server_wait_sec", config.execute_action_server_wait_sec);
   declareIfMissingDouble(node, "execute_result_wait_sec", config.execute_result_wait_sec);
+  declareIfMissingBool(node, "require_control_mode", config.require_control_mode);
+  declareIfMissingString(node, "control_mode_state_topic", config.control_mode_state_topic);
+  declareIfMissingString(node, "auto_control_mode", config.auto_control_mode);
+  declareIfMissingDouble(
+    node, "control_mode_wait_timeout_sec", config.control_mode_wait_timeout_sec);
   declareIfMissingBool(node, "export_csv", config.export_csv);
 
   config.stage1_group_name = node->get_parameter("stage1_group_name").as_string();
@@ -245,6 +250,11 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.execute_action_server_wait_sec =
     node->get_parameter("execute_action_server_wait_sec").as_double();
   config.execute_result_wait_sec = node->get_parameter("execute_result_wait_sec").as_double();
+  config.require_control_mode = node->get_parameter("require_control_mode").as_bool();
+  config.control_mode_state_topic = node->get_parameter("control_mode_state_topic").as_string();
+  config.auto_control_mode = node->get_parameter("auto_control_mode").as_string();
+  config.control_mode_wait_timeout_sec =
+    node->get_parameter("control_mode_wait_timeout_sec").as_double();
   config.export_csv = node->get_parameter("export_csv").as_bool();
   return config;
 }

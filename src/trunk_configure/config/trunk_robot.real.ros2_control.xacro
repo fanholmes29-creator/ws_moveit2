@@ -1,0 +1,95 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro
+        name="trunk_robot_real_ros2_control"
+        params="
+            name
+            initial_positions_file
+            transport:=dry_run
+            port:=
+            baudrate:=1000000
+            can_interface:=can0
+            ip:=
+            dry_run:=true
+            command_timeout_ms:=100
+            require_homing:=true
+            require_absolute_encoder:=true
+            max_position_error_rad:=0.2">
+        <xacro:property name="initial_positions" value="${load_yaml(initial_positions_file)['initial_positions']}"/>
+
+        <ros2_control name="${name}" type="system">
+            <hardware>
+                <plugin>trunk_hardware_interface/TrunkHardwareSystem</plugin>
+                <param name="transport">${transport}</param>
+                <param name="port">${port}</param>
+                <param name="baudrate">${baudrate}</param>
+                <param name="can_interface">${can_interface}</param>
+                <param name="ip">${ip}</param>
+                <param name="dry_run">${dry_run}</param>
+                <param name="command_timeout_ms">${command_timeout_ms}</param>
+                <param name="require_homing">${require_homing}</param>
+                <param name="require_absolute_encoder">${require_absolute_encoder}</param>
+            </hardware>
+
+            <joint name="trunk_joint1">
+                <param name="motor_id">1</param>
+                <param name="gear_ratio">1.0</param>
+                <param name="zero_offset">0.0</param>
+                <param name="direction_sign">1.0</param>
+                <param name="initial_position">${initial_positions['trunk_joint1']}</param>
+                <param name="min_position">-1.39</param>
+                <param name="max_position">1.39</param>
+                <param name="max_velocity">0.05</param>
+                <param name="max_position_error">${max_position_error_rad}</param>
+                <command_interface name="position"/>
+                <state_interface name="position"/>
+                <state_interface name="velocity"/>
+            </joint>
+
+            <joint name="trunk_joint2">
+                <param name="motor_id">2</param>
+                <param name="gear_ratio">1.0</param>
+                <param name="zero_offset">0.0</param>
+                <param name="direction_sign">1.0</param>
+                <param name="initial_position">${initial_positions['trunk_joint2']}</param>
+                <param name="min_position">-1.74</param>
+                <param name="max_position">1.74</param>
+                <param name="max_velocity">0.05</param>
+                <param name="max_position_error">${max_position_error_rad}</param>
+                <command_interface name="position"/>
+                <state_interface name="position"/>
+                <state_interface name="velocity"/>
+            </joint>
+
+            <joint name="trunk_joint3">
+                <param name="motor_id">3</param>
+                <param name="gear_ratio">1.0</param>
+                <param name="zero_offset">0.0</param>
+                <param name="direction_sign">1.0</param>
+                <param name="initial_position">${initial_positions['trunk_joint3']}</param>
+                <param name="min_position">-1.74</param>
+                <param name="max_position">1.74</param>
+                <param name="max_velocity">0.05</param>
+                <param name="max_position_error">${max_position_error_rad}</param>
+                <command_interface name="position"/>
+                <state_interface name="position"/>
+                <state_interface name="velocity"/>
+            </joint>
+
+            <joint name="trunk_joint4">
+                <param name="motor_id">4</param>
+                <param name="gear_ratio">1.0</param>
+                <param name="zero_offset">0.0</param>
+                <param name="direction_sign">1.0</param>
+                <param name="initial_position">${initial_positions['trunk_joint4']}</param>
+                <param name="min_position">-3.14</param>
+                <param name="max_position">3.14</param>
+                <param name="max_velocity">0.05</param>
+                <param name="max_position_error">${max_position_error_rad}</param>
+                <command_interface name="position"/>
+                <state_interface name="position"/>
+                <state_interface name="velocity"/>
+            </joint>
+        </ros2_control>
+    </xacro:macro>
+</robot>
