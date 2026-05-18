@@ -597,9 +597,10 @@ ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py
 
 ```bash
 ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py \
-  service_use_rviz:=false \
-  service_delay_sec:=60.0 \
-  joint_state_wait_timeout_sec:=120.0
+  service_use_rviz:=true \
+  service_rviz_delay_sec:=5.0 \
+  service_delay_sec:=10.0 \
+  joint_state_wait_timeout_sec:=20.0
 ```
 
 说明：

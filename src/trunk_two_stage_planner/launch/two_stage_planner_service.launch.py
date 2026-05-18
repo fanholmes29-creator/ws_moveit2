@@ -37,9 +37,9 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("service_use_rviz", default_value="true"),
             DeclareLaunchArgument("service_rviz_config", default_value=default_rviz_config),
-            DeclareLaunchArgument("service_rviz_delay_sec", default_value="30.0"),
-            DeclareLaunchArgument("service_delay_sec", default_value="60.0"),
-            DeclareLaunchArgument("joint_state_wait_timeout_sec", default_value="120.0"),
+            DeclareLaunchArgument("service_rviz_delay_sec", default_value="20.0"),
+            DeclareLaunchArgument("service_delay_sec", default_value="40.0"),
+            DeclareLaunchArgument("joint_state_wait_timeout_sec", default_value="60.0"),
             DeclareLaunchArgument("robot_namespace", default_value="trunk_robot"),
             DeclareLaunchArgument("start_control_mode_manager", default_value="true"),
             DeclareLaunchArgument("initial_control_mode", default_value="idle"),
