@@ -300,9 +300,11 @@ bool TwoStagePlannerManager::initialize(
     system_config_.control_mode_state_topic,
     rclcpp::QoS(1).transient_local().reliable(),
     std::bind(&TwoStagePlannerManager::controlModeStateCallback, this, std::placeholders::_1));
-  display_republish_timer_ = node_->create_wall_timer(
-    std::chrono::seconds(5),
-    std::bind(&TwoStagePlannerManager::republishLatestDisplayTrajectory, this));
+  if (system_config_.republish_display_trajectory) {
+    display_republish_timer_ = node_->create_wall_timer(
+      std::chrono::seconds(5),
+      std::bind(&TwoStagePlannerManager::republishLatestDisplayTrajectory, this));
+  }
   return true;
 }
 
@@ -313,6 +315,14 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
 
 PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
   const geometry_msgs::msg::Pose& target_pose)
+{
+  return planTwoStageToTargetDetailed(
+    target_pose, system_config_.execute_joint_trajectory);
+}
+
+PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
+  const geometry_msgs::msg::Pose& target_pose,
+  bool execute_trajectory)
 {
   // 运行主链路：
   // 1) 算法层求解 q_pre 与 stage2 目标
@@ -326,7 +336,7 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
 
   std::vector<double> q_start;
   bool using_live_start = false;
-  const bool execution_requested = system_config_.execute_joint_trajectory;
+  const bool execution_requested = execute_trajectory;
   const bool should_wait_for_live_start =
     system_config_.use_live_joint_state_as_start || execution_requested;
 
@@ -437,10 +447,16 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
   const auto merged_joint_trajectory =
     concatenateJointTrajectories(stage1_traj, stage2_plan.trajectory_);
   joint_traj_pub_->publish(merged_joint_trajectory);
+  {
+    std::lock_guard<std::mutex> lock(cached_trajectory_mutex_);
+    cached_joint_trajectory_ = merged_joint_trajectory;
+    cached_summary_ = summary;
+    has_cached_joint_trajectory_ = !merged_joint_trajectory.points.empty();
+  }
   bool execution_skipped_by_control_mode = false;
   const bool execution_allowed_by_mode =
-    !system_config_.execute_joint_trajectory || isAutoExecutionAllowed();
-  if (system_config_.execute_joint_trajectory && !execution_allowed_by_mode) {
+    !execution_requested || isAutoExecutionAllowed();
+  if (execution_requested && !execution_allowed_by_mode) {
     execution_skipped_by_control_mode = true;
     RCLCPP_WARN(
       node_->get_logger(),
@@ -449,7 +465,7 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
       system_config_.auto_control_mode.c_str());
   }
   if (
-    system_config_.execute_joint_trajectory && execution_allowed_by_mode &&
+    execution_requested && execution_allowed_by_mode &&
     !executeJointTrajectory(merged_joint_trajectory))
   {
     RCLCPP_ERROR(node_->get_logger(), "Failed to execute merged joint trajectory.");
@@ -457,6 +473,9 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
       PlannerError::TrajectoryExecutionFailed,
       "Failed to execute merged joint trajectory.",
       summary);
+  }
+  if (execution_requested && execution_allowed_by_mode) {
+    clearDisplayTrajectory();
   }
 
   RCLCPP_INFO(node_->get_logger(), "===== Two-Stage Planning Summary =====");
@@ -515,6 +534,40 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
       system_config_.auto_control_mode + ".");
   }
   return PlannerResult::ok(summary);
+}
+
+PlannerResult TwoStagePlannerManager::executeCachedTrajectory()
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  PlanningSummary summary;
+  {
+    std::lock_guard<std::mutex> lock(cached_trajectory_mutex_);
+    if (!has_cached_joint_trajectory_ || cached_joint_trajectory_.points.empty()) {
+      return PlannerResult::fail(
+        PlannerError::InvalidInput,
+        "No previewed trajectory is cached. Run preview_plan_to_pose first.");
+    }
+    trajectory = cached_joint_trajectory_;
+    summary = cached_summary_;
+  }
+  if (!isAutoExecutionAllowed()) {
+    return PlannerResult::fail(
+      PlannerError::InvalidInput,
+      "Execution requires control mode " + system_config_.auto_control_mode + ".",
+      summary);
+  }
+  if (!executeJointTrajectory(trajectory)) {
+    return PlannerResult::fail(
+      PlannerError::TrajectoryExecutionFailed,
+      "Failed to execute cached joint trajectory.",
+      summary);
+  }
+  clearDisplayTrajectory();
+  {
+    std::lock_guard<std::mutex> lock(cached_trajectory_mutex_);
+    has_cached_joint_trajectory_ = true;
+  }
+  return PlannerResult::ok(summary, "Cached trajectory executed.");
 }
 
 moveit::core::RobotState TwoStagePlannerManager::buildRobotState(const std::vector<double>& q) const
@@ -804,6 +857,8 @@ void TwoStagePlannerManager::publishDisplayTrajectories(
     std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
     latest_display_trajectory_ = msg;
     has_latest_display_trajectory_ = true;
+    cached_display_trajectory_ = msg;
+    has_cached_display_trajectory_ = true;
   }
   RCLCPP_INFO(
     node_->get_logger(),
@@ -824,6 +879,65 @@ void TwoStagePlannerManager::republishLatestDisplayTrajectory() const
     msg = latest_display_trajectory_;
   }
   display_pub_->publish(msg);
+}
+
+void TwoStagePlannerManager::clearDisplayTrajectory() const
+{
+  // RViz's DisplayTrajectory panel can keep and loop the last trajectory in its
+  // own cache. Publishing empty or single-point DisplayTrajectory messages is
+  // not a reliable "clear" command across RViz configurations. Treat this as a
+  // display pause: stop marking any trajectory as actively displayed, and clear
+  // the debug marker overlay that we control. The cached trajectory remains
+  // available and can be displayed again via setCachedTrajectoryDisplay(true).
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    has_latest_display_trajectory_ = false;
+  }
+
+  visualization_msgs::msg::MarkerArray clear_markers;
+  visualization_msgs::msg::Marker marker;
+  marker.action = visualization_msgs::msg::Marker::DELETEALL;
+  clear_markers.markers.push_back(marker);
+  marker_pub_->publish(clear_markers);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Paused cached trajectory display and cleared debug markers. "
+    "The latest planned trajectory remains cached and can be displayed again.");
+}
+
+PlannerResult TwoStagePlannerManager::setCachedTrajectoryDisplay(bool show) const
+{
+  if (!show) {
+    clearDisplayTrajectory();
+    return PlannerResult::ok(PlanningSummary(), "Trajectory display paused.");
+  }
+
+  moveit_msgs::msg::DisplayTrajectory display_msg;
+  visualization_msgs::msg::MarkerArray marker_msg;
+  bool has_markers = false;
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    if (!has_cached_display_trajectory_) {
+      return PlannerResult::fail(
+        PlannerError::InvalidInput,
+        "No cached planned trajectory is available. Run preview_plan_to_pose first.");
+    }
+    display_msg = cached_display_trajectory_;
+    marker_msg = cached_debug_markers_;
+    has_markers = has_cached_debug_markers_;
+    latest_display_trajectory_ = cached_display_trajectory_;
+    has_latest_display_trajectory_ = true;
+  }
+  display_pub_->publish(display_msg);
+  if (has_markers) {
+    marker_pub_->publish(marker_msg);
+  }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Displayed cached planned trajectory with %zu stage trajectories on %s.",
+    display_msg.trajectory.size(),
+    system_config_.display_trajectory_topic.c_str());
+  return PlannerResult::ok(PlanningSummary(), "Cached planned trajectory displayed.");
 }
 
 void TwoStagePlannerManager::publishDebugMarkers(
@@ -854,6 +968,11 @@ void TwoStagePlannerManager::publishDebugMarkers(
   array.markers.push_back(makeLineStripMarker(frame, 11, stage2_points, 0.1f, 0.1f, 0.9f, "stage_paths"));
 
   marker_pub_->publish(array);
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    cached_debug_markers_ = array;
+    has_cached_debug_markers_ = true;
+  }
 }
 
 std::vector<geometry_msgs::msg::Pose> TwoStagePlannerManager::buildStage1CartesianWaypoints(

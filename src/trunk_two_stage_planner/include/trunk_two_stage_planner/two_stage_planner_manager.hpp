@@ -74,6 +74,7 @@ struct TwoStageSystemConfig
   std::string control_mode_state_topic = "control_mode_state";
   std::string auto_control_mode = "auto_plan_execute";
   double control_mode_wait_timeout_sec = 1.0;
+  bool republish_display_trajectory = false;
 
   bool export_csv = false;
   std::string output_dir = "csv/two_stage_system";
@@ -108,6 +109,16 @@ public:
   bool planTwoStageToTarget(const geometry_msgs::msg::Pose& target_pose);
   /// 端到端执行，并返回明确失败原因与算法诊断摘要。
   PlannerResult planTwoStageToTargetDetailed(const geometry_msgs::msg::Pose& target_pose);
+  /// 端到端规划，可选择是否执行；规划成功后缓存合并轨迹供 Web 二次确认执行。
+  PlannerResult planTwoStageToTargetDetailed(
+    const geometry_msgs::msg::Pose& target_pose,
+    bool execute_trajectory);
+  /// 执行最近一次规划缓存，并在完成后清除 RViz 规划显示。
+  PlannerResult executeCachedTrajectory();
+  /// 清除 RViz 中的规划轨迹/调试标记显示。
+  void clearDisplayTrajectory() const;
+  /// 展示或隐藏最近一次规划轨迹；执行后仍可重新展示最近规划结果。
+  PlannerResult setCachedTrajectoryDisplay(bool show) const;
 
 private:
   moveit::core::RobotState buildRobotState(const std::vector<double>& q) const;
@@ -182,6 +193,14 @@ private:
   mutable std::mutex display_trajectory_mutex_;
   mutable moveit_msgs::msg::DisplayTrajectory latest_display_trajectory_;
   mutable bool has_latest_display_trajectory_ = false;
+  mutable moveit_msgs::msg::DisplayTrajectory cached_display_trajectory_;
+  mutable bool has_cached_display_trajectory_ = false;
+  mutable visualization_msgs::msg::MarkerArray cached_debug_markers_;
+  mutable bool has_cached_debug_markers_ = false;
+  mutable std::mutex cached_trajectory_mutex_;
+  trajectory_msgs::msg::JointTrajectory cached_joint_trajectory_;
+  bool has_cached_joint_trajectory_ = false;
+  PlanningSummary cached_summary_;
 };
 
 }  // namespace trunk_two_stage_planner

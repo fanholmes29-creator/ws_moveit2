@@ -27,6 +27,9 @@ include_directories(include)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanToPose.srv"
+  "srv/ExecutePreviewedTrajectory.srv"
+  "srv/FkJointToPose.srv"
+  "srv/SetTrajectoryDisplay.srv"
   DEPENDENCIES geometry_msgs
 )
 
