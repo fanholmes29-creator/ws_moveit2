@@ -59,6 +59,9 @@ launch 会把这些相对名解析到 `/trunk_robot/...`。这样可以避免订
   - `target_position`, `target_orientation`
 
 - **阶段策略与可恢复性**
+  - `stage1_pre_mode`：
+    - `ik_q12_straight`：默认策略，`q1/q2` 继承最终 IK，`q3 = -(q1 + q2)`，`q4` 保持起点
+    - `search`：旧版 `(q1, q2)` 网格搜索预备态策略
   - `stage2_pose_epsilon`：阶段切换可恢复性阈值（越小越严格）
   - `w1..w4`：stage1 代价权重（几何、恢复性、起点偏移、限位）
   - `stage2_pose_wp`, `stage2_pose_wR`：stage2 位姿误差组成权重

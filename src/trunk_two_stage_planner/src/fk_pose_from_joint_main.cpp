@@ -75,6 +75,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingInt(node, "ik_attempts", config.ik_attempts);
   declareIfMissingDouble(node, "ik_timeout", config.ik_timeout);
   declareIfMissingDouble(node, "ik_limit_penalty_weight", config.ik_limit_penalty_weight);
+  declareIfMissingString(node, "stage1_pre_mode", config.stage1_pre_mode);
   declareIfMissingInt(node, "stage1_q1_samples", config.stage1_q1_samples);
   declareIfMissingInt(node, "stage1_q2_samples", config.stage1_q2_samples);
   declareIfMissingDouble(node, "w1", config.w1);
@@ -117,6 +118,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.ik_attempts = node->get_parameter("ik_attempts").as_int();
   config.ik_timeout = node->get_parameter("ik_timeout").as_double();
   config.ik_limit_penalty_weight = node->get_parameter("ik_limit_penalty_weight").as_double();
+  config.stage1_pre_mode = node->get_parameter("stage1_pre_mode").as_string();
   config.stage1_q1_samples = node->get_parameter("stage1_q1_samples").as_int();
   config.stage1_q2_samples = node->get_parameter("stage1_q2_samples").as_int();
   config.w1 = node->get_parameter("w1").as_double();

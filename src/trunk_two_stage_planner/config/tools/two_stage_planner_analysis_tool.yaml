@@ -21,10 +21,12 @@ two_stage_planner_analysis_tool:
     target_position: [0.25, 0.0, 0.35]
     target_orientation: [0.0, 0.0, 0.0, 1.0]
 
-    allow_goal_fallback: true
+    allow_goal_fallback: false
     ik_attempts: 12
     ik_timeout: 0.02
     ik_limit_penalty_weight: 0.2
+
+    stage1_pre_mode: "ik_q12_straight"
 
     # 为提升调参精度，建议使用更密集网格。
     # 警告：这会带来更高计算开销。

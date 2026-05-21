@@ -195,24 +195,19 @@
 
 当前主线方法定义为：
 
-**带第二阶段恢复性约束的两阶段笛卡尔预备态规划**
+**基于最终 IK 的 q1/q2 预备态两阶段规划**
 
 流程如下：
 
 1. 输入最终目标位姿 `T_d`
 2. 求最终 IK 解 `q_goal_ik`
-3. 构造第一阶段受限候选族  
-   `q_pre(q1, q2) = [q1, q2, q1 + q2, q4_fix]`
-4. 对每个候选 `q_pre`，先检查：
-   - 在固定 `q1, q2` 下，仅允许 `q3, q4` 变化时，第二阶段是否能恢复最终目标位姿
-5. 仅在满足恢复性阈值的候选子集内，再综合比较：
-   - 投影几何引导量
-   - 离起点偏移
-   - 关节限位
-   - 安全裕度
-6. 选出最终 `q_pre`
-7. 第一阶段规划到 `q_pre`
-8. 第二阶段从第一阶段终点继续，恢复到最终目标位姿
+3. 按默认策略 `stage1_pre_mode = "ik_q12_straight"` 构造第一阶段预备态：
+   `q_pre = [q_goal_ik[0], q_goal_ik[1], -(q_goal_ik[0] + q_goal_ik[1]), q_start[3]]`
+4. 检查 `q_pre` 是否满足关节限位
+5. 第一阶段规划到 `q_pre`
+6. 第二阶段从第一阶段终点继续，规划到最终 IK 解 `q_goal_ik`
+
+旧版网格搜索策略仍保留，可通过 `stage1_pre_mode = "search"` 启用。该策略会在 `(q1, q2)` 网格中搜索 `q_pre`，并使用第二阶段可恢复性阈值筛选候选。
 
 ### 算法流程图
 
@@ -242,9 +237,13 @@ flowchart TD
     L --> N
     M --> N
 
-    N --> O[stage1 搜索 q_pre]
-    O --> P[stage2 锁定 q1/q2 搜索 q_goal_stage2]
-    P --> Q[MoveIt 规划 stage1]
+    N --> O{stage1_pre_mode}
+    O -- ik_q12_straight --> P[由 q_goal_ik 的 q1/q2 构造 q_pre]
+    O -- search --> U[stage1 网格搜索 q_pre]
+    U --> V[stage2 锁定 q1/q2 搜索 q_goal_stage2]
+    P --> W[stage2 目标直接使用 q_goal_ik]
+    V --> Q[MoveIt 规划 stage1]
+    W --> Q
     Q --> R[MoveIt 规划 stage2]
     R --> S[发布 RViz 轨迹与 Marker]
     S --> T[导出 trajectory.csv / summary.txt / heatmap]
@@ -252,7 +251,7 @@ flowchart TD
 
 ### 代价函数与排序规则
 
-当前实现里的代价函数分为三层：**stage1 完整加权代价**、**stage2 位姿恢复误差**、**stage2 词典序选择规则**。
+当 `stage1_pre_mode = "search"` 时，旧版搜索策略里的代价函数分为三层：**stage1 完整加权代价**、**stage2 位姿恢复误差**、**stage2 词典序选择规则**。
 
 #### 1. Stage1 完整加权代价
 
@@ -378,11 +377,12 @@ J_{\text{ik}}
 ### 当前仍是工程近似的地方
 
 - `stage1_group` / `stage2_group` 不是物理上拆开的链，只是工程入口分组
-- `q3 = q1 + q2` 没有在 MoveIt 中实现为原生硬约束，而是由算法层用于候选构造
+- `q3 = -(q1 + q2)` 没有在 MoveIt 中实现为原生硬约束，而是由算法层用于候选构造
 - 当前起点虽然已经可优先来自实时 `joint_states`，但仍默认以关节状态作为上层规划起点，而不是单独基于“当前末端位姿”直接起算
 - 第一阶段还不是完整的一阶段连续笛卡尔过程约束优化器
 - 第一阶段当前采用的是工程近似：
-  - 先由算法层求 `q_pre`
+  - 默认由最终 IK 的 `q1/q2` 构造 `q_pre`
+  - 可通过 `stage1_pre_mode: "search"` 切回旧版网格搜索 `q_pre`
   - MoveIt 规划到 `q_pre`
   - 可选：参考点笛卡尔导向（当前为低风险工程版）
   - 优先尝试 upright path constraint
@@ -397,7 +397,7 @@ J_{\text{ik}}
 当前版本**不能**被描述为：
 
 - 已经完成完整的一阶段连续笛卡尔过程约束规划
-- 已经原生支持 `q3 = q1 + q2` 硬约束
+- 已经原生支持 `q3 = -(q1 + q2)` 硬约束
 - 已经原生实现“仅由 q3、q4 完成恢复”的 MoveIt 模型层约束
 - 已经完成真实硬件闭环执行链路（当前仍以 MoveIt 规划、显示、导出和 FakeSystem 联调为主）
 
@@ -724,7 +724,7 @@ ros2 service call /trunk_robot/two_stage_planner/plan_to_pose trunk_two_stage_pl
 
 当 `success=false` 时，`error_code` 对应内部 `PlannerError` 枚举值，`message` 会带有失败类型前缀，便于上层区分失败发生在哪一段，例如：
 
-- `[IkFailed] Failed to solve final IK for target pose.`
+- `[IkFailed] Target pose is unreachable: failed to solve final IK.`
 - `[Stage1MoveItPlanningFailed] Stage1 MoveIt planning failed.`
 - `[StartStateUnavailable] Failed to acquire live joint state and start-state fallback is disabled.`
 
@@ -1065,7 +1065,7 @@ ros2 launch trunk_two_stage_planner two_stage_planner_system.launch.py \
 1. 将 stage1 从“规划到 q_pre”进一步升级为真正的笛卡尔参考路径驱动
 2. 增强 stage1 中间过程的显式空间约束与避障表达
 3. 在 MoveIt 层面更严格表达 stage2 对 `q1 / q2` 的锁定或弱松弛
-4. 将 `q3 = q1 + q2` 从算法层近似推进到更强的工程约束表达
+4. 将 `q3 = -(q1 + q2)` 从算法层近似推进到更强的工程约束表达
 5. 对 stage1 / stage2 误差收敛做更系统的参数整定
 6. 完善真实硬件闭环验证、控制器安全策略与执行反馈处理
 

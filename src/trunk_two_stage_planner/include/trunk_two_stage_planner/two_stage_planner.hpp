@@ -57,7 +57,7 @@ public:
   /// 将三维点投影到无限长三维轴线上。
   Eigen::Vector3d projectPointToAxis(const Eigen::Vector3d& p, const Axis3D& axis) const;
 
-  /// 依据 trunk 特定规则构造 stage1 候选：q3 = q1 + q2，q4 固定。
+  /// 依据 trunk 特定规则构造 stage1 候选：q3 = -(q1 + q2)，q4 固定。
   std::vector<double> composeStage1State(double q1, double q2, double q4_fix) const;
 
   /// 获取 stage1 几何参考点 O4(q)，通常为配置中的参考连杆位置。

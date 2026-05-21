@@ -28,10 +28,15 @@
     # false -> 使用下方 target_position + target_orientation
     use_goal_state_as_target_pose: true
 
-    allow_goal_fallback: true
+    allow_goal_fallback: false
     ik_attempts: 12
     ik_timeout: 0.02
     ik_limit_penalty_weight: 0.2
+
+    # stage1 预备态策略：
+    # - ik_q12_straight: q1/q2 继承最终 IK，q3 = -(q1 + q2)，q4 保持起点
+    # - search: 使用旧版 q1/q2 网格搜索策略
+    stage1_pre_mode: "ik_q12_straight"
 
     # stage1 搜索分辨率与加权目标。
     # 警告：采样数会使计算代价近似按 q1_samples * q2_samples 增长。

@@ -242,11 +242,12 @@ struct PlannerConfig
   std::vector<double> target_position{ 0.25, 0.0, 0.35 };
   std::vector<double> target_orientation{ 0.0, 0.0, 0.0, 1.0 };
 
-  bool allow_goal_fallback = true;
+  bool allow_goal_fallback = false;
   int ik_attempts = 12;
   double ik_timeout = 0.02;
   double ik_limit_penalty_weight = 0.2;
 
+  std::string stage1_pre_mode = "ik_q12_straight";
   int stage1_q1_samples = 181;
   int stage1_q2_samples = 181;
   // stage1 加权目标项。
