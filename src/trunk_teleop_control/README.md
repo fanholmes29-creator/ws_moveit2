@@ -1,4 +1,5 @@
 # trunk_teleop_control
+[配置手柄环境](https://www.yahboom.com/build.html?id=15676&cid=732)
 
 `trunk_teleop_control` 是 trunk 机器人的关节空间遥操作 / operator command layer。
 
@@ -61,7 +62,7 @@ ros2 launch trunk_teleop_control trunk_teleop_fake_system_rviz.launch.py \
 source ~/ws_moveit2/install/setup.bash
 export ROS_DOMAIN_ID=77
 export ROS_LOCALHOST_ONLY=1
-ros2 launch trunk_configure demo.launch.py use_rviz:=false
+ros2 launch trunk_two_stage_planner two_stage_planner_service.launch.py
 ```
 
 控制栈必须在 `/trunk_robot` 命名空间下提供 trunk-only 接口，尤其是：

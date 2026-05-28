@@ -8,20 +8,15 @@ import {
   getRobotConfig,
   getStatus,
   getWaypoints,
-  jogJoint,
-  planToPose,
   resetRobotError,
   setMode,
-  setRobotEnable,
-  stopManual
+  setRobotEnable
 } from "./api";
 import { PlanningPanel } from "./PlanningPanel";
 import type {
   ControlMode,
   LogItem,
   OperationLog,
-  PlanForm,
-  PlanResult,
   RobotConfig,
   Status,
   TargetType,
@@ -29,7 +24,7 @@ import type {
 } from "./types";
 
 const jointNames = ["trunk_joint1", "trunk_joint2", "trunk_joint3", "trunk_joint4"];
-const modes: ControlMode[] = ["idle", "manual_teleop", "auto_plan_execute", "estop"];
+const modes: ControlMode[] = ["idle", "auto_plan_execute", "estop"];
 const modeLabels: Record<string, string> = {
   idle: "空闲 idle",
   manual_teleop: "手动 manual_teleop",
@@ -69,17 +64,6 @@ const initialStatus: Status = {
   last_error: null
 };
 
-const initialPlanForm: PlanForm = {
-  use_external_target: true,
-  x: "0.196101",
-  y: "0",
-  z: "0.602433",
-  qx: "-0.014919",
-  qy: "-0.098712",
-  qz: "0.148692",
-  qw: "0.983831"
-};
-
 function ageText(value: number | null) {
   return value === null ? "从未收到" : `${value.toFixed(1)} 秒前`;
 }
@@ -94,24 +78,6 @@ function enableText(value?: boolean | null) {
   return "未知/未接入";
 }
 
-function finiteNumber(value: string) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed);
-}
-
-function validatePlanForm(form: PlanForm) {
-  const values = [form.x, form.y, form.z, form.qx, form.qy, form.qz, form.qw];
-  if (!values.every(finiteNumber)) {
-    return "位姿输入必须是有限数字，不能为 NaN 或 Inf。";
-  }
-  const q = [form.qx, form.qy, form.qz, form.qw].map(Number);
-  const norm = Math.sqrt(q.reduce((sum, value) => sum + value * value, 0));
-  if (norm < 1e-6) {
-    return "四元数范数过小，请检查 qx/qy/qz/qw。";
-  }
-  return "";
-}
-
 function App() {
   const [status, setStatus] = useState<Status>(initialStatus);
   const [logs, setLogs] = useState<{ operations: LogItem[]; errors: LogItem[] }>({
@@ -121,29 +87,11 @@ function App() {
   const [operationLogs, setOperationLogs] = useState<OperationLog[]>([]);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [message, setMessage] = useState("");
-  const [planForm, setPlanForm] = useState<PlanForm>(initialPlanForm);
-  const [planResult, setPlanResult] = useState<PlanResult | null>(null);
-  const [step, setStep] = useState("0.02");
-  const [velocityScale, setVelocityScale] = useState("0.2");
-  const [deadman, setDeadman] = useState(false);
   const [waypointName, setWaypointName] = useState("");
   const [waypointNote, setWaypointNote] = useState("");
   const [requestedTargetType, setRequestedTargetType] = useState<TargetType>("pose_quaternion");
   const [robotConfig, setRobotConfig] = useState<RobotConfig | null>(null);
 
-  const planError = useMemo(() => validatePlanForm(planForm), [planForm]);
-  const modeIsEstop = status.control_mode === "estop";
-  const manualReady =
-    status.ros_connected &&
-    status.control_mode === "manual_teleop" &&
-    status.actions.follow_joint_trajectory &&
-    !modeIsEstop;
-  const planReady =
-    status.ros_connected &&
-    status.control_mode === "auto_plan_execute" &&
-    status.services.planner &&
-    !modeIsEstop &&
-    !planError;
   const commandPhase = status.command_state?.phase ?? "idle";
   const commandBusy = ["manual_jogging", "planning", "executing"].includes(commandPhase);
   const dangerousModeSwitchDisabled = commandPhase === "executing" || commandPhase === "manual_jogging";
@@ -186,48 +134,6 @@ function App() {
     }
   }
 
-  async function onPlan() {
-    const validation = validatePlanForm(planForm);
-    if (validation) {
-      setMessage(validation);
-      return;
-    }
-    try {
-      const result = (await planToPose(planForm)) as PlanResult;
-      setPlanResult(result);
-      setMessage(result.message);
-      await refreshSideData();
-    } catch (error) {
-      setMessage((error as Error).message);
-    }
-  }
-
-  async function onJog(jointName: string, direction: -1 | 1) {
-    try {
-      const result = await jogJoint(
-        jointName,
-        direction,
-        Number(step),
-        Number(velocityScale),
-        deadman
-      );
-      setMessage(result.message);
-      await refreshSideData();
-    } catch (error) {
-      setMessage((error as Error).message);
-    }
-  }
-
-  async function onStop() {
-    try {
-      const result = await stopManual();
-      setMessage(result.message);
-      await refreshSideData();
-    } catch (error) {
-      setMessage((error as Error).message);
-    }
-  }
-
   async function onRobotEnable(enable: boolean) {
     try {
       const result = await setRobotEnable(enable);
@@ -264,35 +170,6 @@ function App() {
     await refreshSideData();
   }
 
-  async function savePoseWaypoint() {
-    if (!waypointName.trim()) {
-      setMessage("请输入点位名称。");
-      return;
-    }
-    if (planError) {
-      setMessage(planError);
-      return;
-    }
-    await createWaypoint({
-      name: waypointName,
-      kind: "pose_quaternion",
-      note: waypointNote,
-      target_pose: {
-        use_external_target: planForm.use_external_target,
-        position: { x: Number(planForm.x), y: Number(planForm.y), z: Number(planForm.z) },
-        orientation: {
-          x: Number(planForm.qx),
-          y: Number(planForm.qy),
-          z: Number(planForm.qz),
-          w: Number(planForm.qw)
-        }
-      }
-    });
-    setWaypointName("");
-    setWaypointNote("");
-    await refreshSideData();
-  }
-
   function fillPoseWaypoint(waypoint: Waypoint) {
     if (!waypoint.kind.startsWith("pose") || !waypoint.target_pose) {
       return;
@@ -302,16 +179,7 @@ function App() {
       position?: { x?: number; y?: number; z?: number };
       orientation?: { x?: number; y?: number; z?: number; w?: number };
     };
-    setPlanForm({
-      use_external_target: pose.use_external_target ?? true,
-      x: String(pose.position?.x ?? 0),
-      y: String(pose.position?.y ?? 0),
-      z: String(pose.position?.z ?? 0),
-      qx: String(pose.orientation?.x ?? 0),
-      qy: String(pose.orientation?.y ?? 0),
-      qz: String(pose.orientation?.z ?? 0),
-      qw: String(pose.orientation?.w ?? 1)
-    });
+    setRequestedTargetType("pose_quaternion");
     setMessage(`已载入点位：${waypoint.name}`);
   }
 
@@ -434,26 +302,15 @@ function App() {
           </ControlGroup>
 
           <ControlGroup title="轨迹回放">
-            <button disabled>最近轨迹展示/取消在中央规划面板操作</button>
-            <button disabled>轨迹执行需先规划后确认</button>
+            <p className="todo">最近轨迹展示、暂停和执行在中央规划面板操作。</p>
+            <p className="todo">执行流程：先规划预览，再确认执行。</p>
           </ControlGroup>
 
           <ControlGroup title="机械臂操作">
             <button onClick={() => setRequestedTargetType("joint")}>关节操作</button>
             <button onClick={() => setRequestedTargetType("pose_quaternion")}>位置姿态操作</button>
             <button disabled={!status.services.set_control_mode || dangerousModeSwitchDisabled} onClick={() => onSetMode("auto_plan_execute")}>进入自动规划模式</button>
-            <button disabled={!status.services.set_control_mode || dangerousModeSwitchDisabled} onClick={() => onSetMode("manual_teleop")}>进入手动点动模式</button>
-            <button disabled={!manualReady || !deadman || commandBusy} onClick={() => onJog("trunk_joint1", 1)}>连控旋转 +</button>
-            <button disabled={!manualReady || !deadman || commandBusy} onClick={() => onJog("trunk_joint1", -1)}>连控旋转 -</button>
-            <button onClick={onStop}>停止操作</button>
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={deadman}
-                onChange={(event) => setDeadman(event.target.checked)}
-              />
-              deadman / 使能
-            </label>
+            <button disabled>运动流程：设置目标 → 规划预览 → 确认执行</button>
           </ControlGroup>
         </aside>
       </section>
@@ -470,7 +327,6 @@ function App() {
               <input value={waypointNote} onChange={(event) => setWaypointNote(event.target.value)} />
             </label>
             <button onClick={saveJointWaypoint}>保存当前关节角</button>
-            <button onClick={savePoseWaypoint}>保存目标位姿</button>
           </div>
           <div className="waypoints compact-waypoints">
             {waypoints.map((waypoint) => (

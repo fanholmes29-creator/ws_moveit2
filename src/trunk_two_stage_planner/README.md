@@ -900,7 +900,7 @@ ros2 service call /trunk_robot/set_control_mode trunk_teleop_control/srv/SetCont
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 run trunk_two_stage_planner fk_pose_from_joint --ros-args -p goal_joint_target:="[-1.5, 1.5, 0.7, 0.6]"
+ros2 run trunk_two_stage_planner fk_pose_from_joint --ros-args -p goal_joint_target:="[-1.0, 1.0, 0.7, 0.6]"
 ```
 
 ### IK 反解工具（输入目标位姿，输出可粘贴关节值）
