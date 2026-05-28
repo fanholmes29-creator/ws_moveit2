@@ -35,6 +35,11 @@
     command_duration: 0.2
     # 摇杆轴死区，小于该绝对值时认为摇杆已回中并停止发布运动命令。
     axis_deadzone: 0.15
+    # 连续控制下对摇杆轴输入做一阶低通滤波，范围 [0,1]，越小越平滑。
+    axis_filter_alpha: 0.25
+    # 死区迟滞：超过 engage 才开始运动，低于 release 才停止运动，避免阈值附近抖动。
+    axis_deadzone_release: 0.15
+    axis_deadzone_engage: 0.22
     # 内部积分目标与当前反馈偏差过大时重置目标，避免目标漂移。
     command_state_max_error_rad: 0.2
 

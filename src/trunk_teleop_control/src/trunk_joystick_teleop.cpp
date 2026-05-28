@@ -67,6 +67,9 @@ public:
     axis_step_ = declare_parameter<int>("axis_step", 1);
     axis_step_threshold_ = declare_parameter<double>("axis_step_threshold", 0.5);
     invert_axis_step_ = declare_parameter<bool>("invert_axis_step", false);
+    axis_filter_alpha_ = declare_parameter<double>("axis_filter_alpha", 0.25);
+    axis_deadzone_release_ = declare_parameter<double>("axis_deadzone_release", axis_deadzone_);
+    axis_deadzone_engage_ = declare_parameter<double>("axis_deadzone_engage", axis_deadzone_ + 0.05);
 
     joint_min_limits_.reserve(joint_names_.size());
     joint_max_limits_.reserve(joint_names_.size());
@@ -116,6 +119,31 @@ public:
         get_logger(), "Invalid command_state_max_error_rad %.3f; using its absolute value.",
         command_state_max_error_rad_);
       command_state_max_error_rad_ = std::abs(command_state_max_error_rad_);
+    }
+    if (axis_filter_alpha_ < 0.0 || axis_filter_alpha_ > 1.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid axis_filter_alpha %.3f; clamping to [0, 1].",
+        axis_filter_alpha_);
+      axis_filter_alpha_ = std::clamp(axis_filter_alpha_, 0.0, 1.0);
+    }
+    if (axis_deadzone_release_ < 0.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid axis_deadzone_release %.3f; using its absolute value.",
+        axis_deadzone_release_);
+      axis_deadzone_release_ = std::abs(axis_deadzone_release_);
+    }
+    if (axis_deadzone_engage_ < 0.0) {
+      RCLCPP_WARN(
+        get_logger(), "Invalid axis_deadzone_engage %.3f; using its absolute value.",
+        axis_deadzone_engage_);
+      axis_deadzone_engage_ = std::abs(axis_deadzone_engage_);
+    }
+    if (axis_deadzone_engage_ < axis_deadzone_release_) {
+      RCLCPP_WARN(
+        get_logger(),
+        "axis_deadzone_engage %.3f is lower than axis_deadzone_release %.3f; aligning engage to release.",
+        axis_deadzone_engage_, axis_deadzone_release_);
+      axis_deadzone_engage_ = axis_deadzone_release_;
     }
 
     if (control_mode_ == "step") {
@@ -242,6 +270,9 @@ private:
   {
     q_command_initialized_ = false;
     q_command_.clear();
+    axis_motion_active_ = false;
+    axis_filter_initialized_ = false;
+    filtered_axis_step_value_ = 0.0;
   }
 
   std::string selectedJointName() const
@@ -398,7 +429,26 @@ private:
       axis_step_value = -axis_step_value;
     }
 
-    if (std::abs(axis_step_value) < axis_deadzone_) {
+    if (!axis_filter_initialized_) {
+      filtered_axis_step_value_ = axis_step_value;
+      axis_filter_initialized_ = true;
+    } else {
+      filtered_axis_step_value_ =
+        axis_filter_alpha_ * axis_step_value + (1.0 - axis_filter_alpha_) * filtered_axis_step_value_;
+    }
+
+    const double abs_filtered_axis = std::abs(filtered_axis_step_value_);
+    if (!axis_motion_active_) {
+      if (abs_filtered_axis >= axis_deadzone_engage_) {
+        axis_motion_active_ = true;
+      } else {
+        // Keep the next continuous command anchored to controller feedback while stick is around center.
+        q_command_ = q_current_;
+        resetContinuousCommandState();
+        last_control_time_ = tick_time;
+        return;
+      }
+    } else if (abs_filtered_axis <= axis_deadzone_release_) {
       // Keep the next continuous command anchored to controller feedback after the stick rests.
       q_command_ = q_current_;
       resetContinuousCommandState();
@@ -436,7 +486,7 @@ private:
     last_control_time_ = tick_time;
 
     // Integrate joystick deflection into a bounded position command for the selected joint.
-    q_command_[selected_joint_index_] += axis_step_value * max_velocity_rad_s_ * dt;
+    q_command_[selected_joint_index_] += filtered_axis_step_value_ * max_velocity_rad_s_ * dt;
     q_command_[selected_joint_index_] = std::clamp(
       q_command_[selected_joint_index_],
       joint_min_limits_[selected_joint_index_],
@@ -451,14 +501,19 @@ private:
     trajectory_pub_->publish(trajectory);
     RCLCPP_DEBUG(
       get_logger(),
-      "Published continuous command: selected_joint=%s axis=%.3f dt=%.3f q_command=%s",
-      joint_names_[selected_joint_index_].c_str(), axis_step_value, dt,
+      "Published continuous command: selected_joint=%s axis_raw=%.3f axis_filtered=%.3f dt=%.3f q_command=%s",
+      joint_names_[selected_joint_index_].c_str(), axis_step_value, filtered_axis_step_value_, dt,
       vectorToString(q_command_).c_str());
   }
 
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
     if (!msg) {
+      return;
+    }
+    if (use_controller_state_ && has_controller_state_feedback_) {
+      // When controller feedback is available, keep a single feedback source for teleop
+      // state integration to avoid command jitter from interleaved state topics.
       return;
     }
     if (msg->name.size() != msg->position.size()) {
@@ -532,6 +587,7 @@ private:
 
     q_current_ = std::move(q_current);
     has_joint_state_ = true;
+    has_controller_state_feedback_ = true;
   }
 
   void controlModeStateCallback(const std_msgs::msg::String::SharedPtr msg)
@@ -708,6 +764,9 @@ private:
     RCLCPP_INFO(get_logger(), "  max_velocity_rad_s: %.3f", max_velocity_rad_s_);
     RCLCPP_INFO(get_logger(), "  command_duration: %.3f", command_duration_);
     RCLCPP_INFO(get_logger(), "  axis_deadzone: %.3f", axis_deadzone_);
+    RCLCPP_INFO(get_logger(), "  axis_filter_alpha: %.3f", axis_filter_alpha_);
+    RCLCPP_INFO(get_logger(), "  axis_deadzone_release: %.3f", axis_deadzone_release_);
+    RCLCPP_INFO(get_logger(), "  axis_deadzone_engage: %.3f", axis_deadzone_engage_);
     RCLCPP_INFO(
       get_logger(), "  command_state_max_error_rad: %.3f", command_state_max_error_rad_);
     RCLCPP_INFO(get_logger(), "  joint_names: %s", vectorToStringNames(joint_names_).c_str());
@@ -776,6 +835,9 @@ private:
   int axis_step_{1};
   double axis_step_threshold_{0.5};
   bool invert_axis_step_{false};
+  double axis_filter_alpha_{0.25};
+  double axis_deadzone_release_{0.15};
+  double axis_deadzone_engage_{0.20};
 
   std::vector<double> q_current_;
   std::vector<double> q_command_;
@@ -788,6 +850,9 @@ private:
   bool previous_y_pressed_{false};
   bool previous_axis_positive_{false};
   bool previous_axis_negative_{false};
+  bool axis_motion_active_{false};
+  bool axis_filter_initialized_{false};
+  double filtered_axis_step_value_{0.0};
 
   rclcpp::Time last_joy_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_joy_stamp_{0, 0, RCL_ROS_TIME};
@@ -797,6 +862,7 @@ private:
   bool has_joy_{false};
   bool has_joint_state_{false};
   bool has_control_mode_state_{false};
+  bool has_controller_state_feedback_{false};
   bool goal_active_{false};
   std::string current_control_mode_{"idle"};
 };
