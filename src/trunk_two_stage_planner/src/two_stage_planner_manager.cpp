@@ -49,6 +49,14 @@ std::string joinDoubles(const std::vector<double>& values)
   return oss.str();
 }
 
+std::string normalizeMode(std::string mode)
+{
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return mode;
+}
+
 struct JointStateValidationResult
 {
   bool accepted = false;
@@ -246,6 +254,7 @@ bool TwoStagePlannerManager::initialize(
   // 该方法完成依赖装配与运行时发布器初始化。
   algorithm_config_ = algorithm_config;
   system_config_ = system_config;
+  system_config_.auto_control_mode = normalizeMode(system_config_.auto_control_mode);
 
   if (!kinematics_.initialize(node_, algorithm_config_)) {
     return false;
@@ -287,6 +296,15 @@ bool TwoStagePlannerManager::initialize(
     system_config_.joint_states_topic,
     rclcpp::SensorDataQoS(),
     std::bind(&TwoStagePlannerManager::jointStateCallback, this, std::placeholders::_1));
+  control_mode_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    system_config_.control_mode_state_topic,
+    rclcpp::QoS(1).transient_local().reliable(),
+    std::bind(&TwoStagePlannerManager::controlModeStateCallback, this, std::placeholders::_1));
+  if (system_config_.republish_display_trajectory) {
+    display_republish_timer_ = node_->create_wall_timer(
+      std::chrono::seconds(5),
+      std::bind(&TwoStagePlannerManager::republishLatestDisplayTrajectory, this));
+  }
   return true;
 }
 
@@ -297,6 +315,14 @@ bool TwoStagePlannerManager::planTwoStageToTarget(const geometry_msgs::msg::Pose
 
 PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
   const geometry_msgs::msg::Pose& target_pose)
+{
+  return planTwoStageToTargetDetailed(
+    target_pose, system_config_.execute_joint_trajectory);
+}
+
+PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
+  const geometry_msgs::msg::Pose& target_pose,
+  bool execute_trajectory)
 {
   // 运行主链路：
   // 1) 算法层求解 q_pre 与 stage2 目标
@@ -310,35 +336,57 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
 
   std::vector<double> q_start;
   bool using_live_start = false;
-  if (system_config_.use_live_joint_state_as_start) {
-    const auto wait_deadline =
-      std::chrono::steady_clock::now() +
-      std::chrono::duration<double>(std::max(0.0, system_config_.live_start_state_wait_sec));
-    while (!getCurrentJointState(q_start) && std::chrono::steady_clock::now() < wait_deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
+  const bool execution_requested = execute_trajectory;
+  const bool should_wait_for_live_start =
+    system_config_.use_live_joint_state_as_start || execution_requested;
 
-    if (!getCurrentJointState(q_start)) {
+  if (execution_requested && !system_config_.use_live_joint_state_as_start) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "execute_joint_trajectory is true, so live joint state is required even though "
+      "use_live_joint_state_as_start is false.");
+  }
+
+  if (should_wait_for_live_start) {
+    using_live_start = waitForCurrentJointState(q_start);
+    if (!using_live_start) {
+      if (execution_requested) {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "Refusing to execute: no valid live joint state was received from %s within %.2f s. "
+          "Set execute_joint_trajectory:=false to allow planning-only fallback to q_start.",
+          system_config_.joint_states_topic.c_str(),
+          system_config_.joint_state_wait_timeout_sec);
+        return PlannerResult::fail(
+          PlannerError::StartStateUnavailable,
+          "Execution requires a valid live joint state.");
+      }
+
       if (!system_config_.allow_start_state_fallback_to_config) {
         RCLCPP_ERROR(
           node_->get_logger(),
           "Failed to acquire live joint state from %s within %.2f s.",
           system_config_.joint_states_topic.c_str(),
-          system_config_.live_start_state_wait_sec);
+          system_config_.joint_state_wait_timeout_sec);
         return PlannerResult::fail(
           PlannerError::StartStateUnavailable,
           "Failed to acquire live joint state and start-state fallback is disabled.");
       }
+
       q_start = algorithm_config_.q_start;
       RCLCPP_WARN(
         node_->get_logger(),
-        "Live joint state unavailable on %s; falling back to configured q_start.",
+        "Live joint state unavailable on %s; falling back to configured q_start because "
+        "execute_joint_trajectory is false.",
         system_config_.joint_states_topic.c_str());
-    } else {
-      using_live_start = true;
     }
   } else {
     q_start = algorithm_config_.q_start;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Using configured q_start because use_live_joint_state_as_start and "
+      "execute_joint_trajectory are both false. q_start=[%s]",
+      joinDoubles(q_start).c_str());
   }
 
   if (using_live_start) {
@@ -399,12 +447,35 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
   const auto merged_joint_trajectory =
     concatenateJointTrajectories(stage1_traj, stage2_plan.trajectory_);
   joint_traj_pub_->publish(merged_joint_trajectory);
-  if (system_config_.execute_joint_trajectory && !executeJointTrajectory(merged_joint_trajectory)) {
+  {
+    std::lock_guard<std::mutex> lock(cached_trajectory_mutex_);
+    cached_joint_trajectory_ = merged_joint_trajectory;
+    cached_summary_ = summary;
+    has_cached_joint_trajectory_ = !merged_joint_trajectory.points.empty();
+  }
+  bool execution_skipped_by_control_mode = false;
+  const bool execution_allowed_by_mode =
+    !execution_requested || isAutoExecutionAllowed();
+  if (execution_requested && !execution_allowed_by_mode) {
+    execution_skipped_by_control_mode = true;
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Planning succeeded and trajectory was published, but FollowJointTrajectory execution was "
+      "skipped because control mode is not '%s'.",
+      system_config_.auto_control_mode.c_str());
+  }
+  if (
+    execution_requested && execution_allowed_by_mode &&
+    !executeJointTrajectory(merged_joint_trajectory))
+  {
     RCLCPP_ERROR(node_->get_logger(), "Failed to execute merged joint trajectory.");
     return PlannerResult::fail(
       PlannerError::TrajectoryExecutionFailed,
       "Failed to execute merged joint trajectory.",
       summary);
+  }
+  if (execution_requested && execution_allowed_by_mode) {
+    clearDisplayTrajectory();
   }
 
   RCLCPP_INFO(node_->get_logger(), "===== Two-Stage Planning Summary =====");
@@ -456,7 +527,47 @@ PlannerResult TwoStagePlannerManager::planTwoStageToTargetDetailed(
     exportStage1HeatmapCsv(system_config_.output_dir + "/stage1_heatmap.csv", summary.heatmap_samples);
   }
 
+  if (execution_skipped_by_control_mode) {
+    return PlannerResult::ok(
+      summary,
+      "Planning succeeded; execution skipped because control mode is not " +
+      system_config_.auto_control_mode + ".");
+  }
   return PlannerResult::ok(summary);
+}
+
+PlannerResult TwoStagePlannerManager::executeCachedTrajectory()
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  PlanningSummary summary;
+  {
+    std::lock_guard<std::mutex> lock(cached_trajectory_mutex_);
+    if (!has_cached_joint_trajectory_ || cached_joint_trajectory_.points.empty()) {
+      return PlannerResult::fail(
+        PlannerError::InvalidInput,
+        "No previewed trajectory is cached. Run preview_plan_to_pose first.");
+    }
+    trajectory = cached_joint_trajectory_;
+    summary = cached_summary_;
+  }
+  if (!isAutoExecutionAllowed()) {
+    return PlannerResult::fail(
+      PlannerError::InvalidInput,
+      "Execution requires control mode " + system_config_.auto_control_mode + ".",
+      summary);
+  }
+  if (!executeJointTrajectory(trajectory)) {
+    return PlannerResult::fail(
+      PlannerError::TrajectoryExecutionFailed,
+      "Failed to execute cached joint trajectory.",
+      summary);
+  }
+  clearDisplayTrajectory();
+  {
+    std::lock_guard<std::mutex> lock(cached_trajectory_mutex_);
+    has_cached_joint_trajectory_ = true;
+  }
+  return PlannerResult::ok(summary, "Cached trajectory executed.");
 }
 
 moveit::core::RobotState TwoStagePlannerManager::buildRobotState(const std::vector<double>& q) const
@@ -741,6 +852,92 @@ void TwoStagePlannerManager::publishDisplayTrajectories(
   msg.trajectory.push_back(stage1_traj);
   msg.trajectory.push_back(stage2_traj);
   display_pub_->publish(msg);
+
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    latest_display_trajectory_ = msg;
+    has_latest_display_trajectory_ = true;
+    cached_display_trajectory_ = msg;
+    has_cached_display_trajectory_ = true;
+  }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Published DisplayTrajectory with %zu stage trajectories on %s. It will be republished "
+    "periodically while the planner node is alive so RViz can reconnect and animate it.",
+    msg.trajectory.size(),
+    system_config_.display_trajectory_topic.c_str());
+}
+
+void TwoStagePlannerManager::republishLatestDisplayTrajectory() const
+{
+  moveit_msgs::msg::DisplayTrajectory msg;
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    if (!has_latest_display_trajectory_) {
+      return;
+    }
+    msg = latest_display_trajectory_;
+  }
+  display_pub_->publish(msg);
+}
+
+void TwoStagePlannerManager::clearDisplayTrajectory() const
+{
+  // RViz's DisplayTrajectory panel can keep and loop the last trajectory in its
+  // own cache. Publishing empty or single-point DisplayTrajectory messages is
+  // not a reliable "clear" command across RViz configurations. Treat this as a
+  // display pause: stop marking any trajectory as actively displayed, and clear
+  // the debug marker overlay that we control. The cached trajectory remains
+  // available and can be displayed again via setCachedTrajectoryDisplay(true).
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    has_latest_display_trajectory_ = false;
+  }
+
+  visualization_msgs::msg::MarkerArray clear_markers;
+  visualization_msgs::msg::Marker marker;
+  marker.action = visualization_msgs::msg::Marker::DELETEALL;
+  clear_markers.markers.push_back(marker);
+  marker_pub_->publish(clear_markers);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Paused cached trajectory display and cleared debug markers. "
+    "The latest planned trajectory remains cached and can be displayed again.");
+}
+
+PlannerResult TwoStagePlannerManager::setCachedTrajectoryDisplay(bool show) const
+{
+  if (!show) {
+    clearDisplayTrajectory();
+    return PlannerResult::ok(PlanningSummary(), "Trajectory display paused.");
+  }
+
+  moveit_msgs::msg::DisplayTrajectory display_msg;
+  visualization_msgs::msg::MarkerArray marker_msg;
+  bool has_markers = false;
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    if (!has_cached_display_trajectory_) {
+      return PlannerResult::fail(
+        PlannerError::InvalidInput,
+        "No cached planned trajectory is available. Run preview_plan_to_pose first.");
+    }
+    display_msg = cached_display_trajectory_;
+    marker_msg = cached_debug_markers_;
+    has_markers = has_cached_debug_markers_;
+    latest_display_trajectory_ = cached_display_trajectory_;
+    has_latest_display_trajectory_ = true;
+  }
+  display_pub_->publish(display_msg);
+  if (has_markers) {
+    marker_pub_->publish(marker_msg);
+  }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Displayed cached planned trajectory with %zu stage trajectories on %s.",
+    display_msg.trajectory.size(),
+    system_config_.display_trajectory_topic.c_str());
+  return PlannerResult::ok(PlanningSummary(), "Cached planned trajectory displayed.");
 }
 
 void TwoStagePlannerManager::publishDebugMarkers(
@@ -771,6 +968,11 @@ void TwoStagePlannerManager::publishDebugMarkers(
   array.markers.push_back(makeLineStripMarker(frame, 11, stage2_points, 0.1f, 0.1f, 0.9f, "stage_paths"));
 
   marker_pub_->publish(array);
+  {
+    std::lock_guard<std::mutex> lock(display_trajectory_mutex_);
+    cached_debug_markers_ = array;
+    has_cached_debug_markers_ = true;
+  }
 }
 
 std::vector<geometry_msgs::msg::Pose> TwoStagePlannerManager::buildStage1CartesianWaypoints(
@@ -1004,6 +1206,31 @@ void TwoStagePlannerManager::jointStateCallback(const sensor_msgs::msg::JointSta
   std::lock_guard<std::mutex> lock(joint_state_mutex_);
   latest_joint_state_ = validation.positions;
   has_latest_joint_state_ = true;
+  if (!logged_first_joint_state_) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Received live joint state from %s. expected_joint_names=[%s], q_current=[%s]",
+      system_config_.joint_states_topic.c_str(),
+      joinStrings(system_config_.expected_joint_names).c_str(),
+      joinDoubles(latest_joint_state_).c_str());
+    logged_first_joint_state_ = true;
+  }
+}
+
+void TwoStagePlannerManager::controlModeStateCallback(const std_msgs::msg::String::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  const std::string mode = normalizeMode(msg->data);
+  std::lock_guard<std::mutex> lock(control_mode_mutex_);
+  if (!has_control_mode_state_ || latest_control_mode_ != mode) {
+    RCLCPP_INFO(
+      node_->get_logger(), "Received control mode state: '%s' (auto required: '%s').",
+      mode.c_str(), system_config_.auto_control_mode.c_str());
+  }
+  latest_control_mode_ = mode;
+  has_control_mode_state_ = true;
 }
 
 bool TwoStagePlannerManager::getCurrentJointState(std::vector<double>& q_current) const
@@ -1014,6 +1241,88 @@ bool TwoStagePlannerManager::getCurrentJointState(std::vector<double>& q_current
     return false;
   }
   q_current = latest_joint_state_;
+  return true;
+}
+
+bool TwoStagePlannerManager::waitForCurrentJointState(std::vector<double>& q_current) const
+{
+  const double timeout_sec = std::max(0.0, system_config_.joint_state_wait_timeout_sec);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Waiting up to %.2f s for live joint state from %s. expected_joint_names=[%s]",
+    timeout_sec,
+    system_config_.joint_states_topic.c_str(),
+    joinStrings(system_config_.expected_joint_names).c_str());
+
+  const auto wait_deadline =
+    std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_sec);
+  while (rclcpp::ok()) {
+    if (getCurrentJointState(q_current)) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "Using latest live joint state from %s as planning start. q_start=[%s]",
+        system_config_.joint_states_topic.c_str(),
+        joinDoubles(q_current).c_str());
+      return true;
+    }
+
+    if (std::chrono::steady_clock::now() >= wait_deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return false;
+}
+
+bool TwoStagePlannerManager::waitForControlModeState() const
+{
+  if (!system_config_.require_control_mode) {
+    return true;
+  }
+
+  const double timeout_sec = std::max(0.0, system_config_.control_mode_wait_timeout_sec);
+  const auto wait_deadline =
+    std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_sec);
+  while (rclcpp::ok()) {
+    {
+      std::lock_guard<std::mutex> lock(control_mode_mutex_);
+      if (has_control_mode_state_) {
+        return true;
+      }
+    }
+
+    if (std::chrono::steady_clock::now() >= wait_deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return false;
+}
+
+bool TwoStagePlannerManager::isAutoExecutionAllowed() const
+{
+  if (!system_config_.require_control_mode) {
+    return true;
+  }
+  if (!waitForControlModeState()) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Refusing FollowJointTrajectory execution: no control mode state was received from '%s' "
+      "within %.2f s.",
+      system_config_.control_mode_state_topic.c_str(),
+      system_config_.control_mode_wait_timeout_sec);
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(control_mode_mutex_);
+  if (latest_control_mode_ != system_config_.auto_control_mode) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Refusing FollowJointTrajectory execution: current control mode is '%s', required '%s'.",
+      latest_control_mode_.c_str(),
+      system_config_.auto_control_mode.c_str());
+    return false;
+  }
   return true;
 }
 

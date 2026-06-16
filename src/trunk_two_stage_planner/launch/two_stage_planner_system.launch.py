@@ -25,7 +25,7 @@ def generate_launch_description():
     system_share = get_package_share_directory("trunk_two_stage_planner")
 
     # 待办：如需命名完全统一，可将这些文件名改为 planner_* 风格。
-    rviz_config = os.path.join(system_share, "config", "two_stage_system.rviz")
+    default_rviz_config = os.path.join(system_share, "config", "two_stage_system_moveit.rviz")
     params_yaml = os.path.join(system_share, "config", "two_stage_system_params.yaml")
     robot_namespace = LaunchConfiguration("robot_namespace")
     absolute_robot_namespace = [TextSubstitution(text="/"), robot_namespace]
@@ -41,8 +41,13 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("system_use_rviz", default_value="true"),
-            DeclareLaunchArgument("manager_delay_sec", default_value="5.0"),
+            DeclareLaunchArgument("system_rviz_config", default_value=default_rviz_config),
+            DeclareLaunchArgument("rviz_delay_sec", default_value="5.0"),
+            DeclareLaunchArgument("manager_delay_sec", default_value="10.0"),
+            DeclareLaunchArgument("joint_state_wait_timeout_sec", default_value="20.0"),
             DeclareLaunchArgument("robot_namespace", default_value="trunk_robot"),
+            DeclareLaunchArgument("start_control_mode_manager", default_value="true"),
+            DeclareLaunchArgument("initial_control_mode", default_value="auto_plan_execute"),
             GroupAction(
                 [
                     PushRosNamespace(robot_namespace),
@@ -52,14 +57,39 @@ def generate_launch_description():
                         ),
                         launch_arguments={"use_rviz": "false"}.items(),
                     ),
-                    # 使用专用 RViz 配置，突出阶段标记与轨迹显示。
                     Node(
-                        package="rviz2",
-                        executable="rviz2",
-                        arguments=["-d", rviz_config],
+                        package="trunk_teleop_control",
+                        executable="control_mode_manager",
+                        name="control_mode_manager",
                         output="screen",
-                        parameters=rviz_params,
-                        condition=IfCondition(LaunchConfiguration("system_use_rviz")),
+                        condition=IfCondition(
+                            LaunchConfiguration("start_control_mode_manager")
+                        ),
+                        parameters=[
+                            {
+                                "initial_mode": LaunchConfiguration("initial_control_mode"),
+                                "state_topic": "control_mode_state",
+                                "set_mode_service": "set_control_mode",
+                                "follow_joint_trajectory_action": (
+                                    "trunk_group_controller/follow_joint_trajectory"
+                                ),
+                            }
+                        ],
+                    ),
+                    # RViz 启动较重，延后加载可避免干扰 controller spawner 和 planner 起步。
+                    TimerAction(
+                        period=LaunchConfiguration("rviz_delay_sec"),
+                        actions=[
+                            Node(
+                                package="rviz2",
+                                executable="rviz2",
+                                namespace=absolute_robot_namespace,
+                                arguments=["-d", LaunchConfiguration("system_rviz_config")],
+                                output="screen",
+                                parameters=rviz_params,
+                                condition=IfCondition(LaunchConfiguration("system_use_rviz")),
+                            )
+                        ],
                     ),
                     TimerAction(
                         # 警告：
@@ -72,7 +102,15 @@ def generate_launch_description():
                                 namespace=absolute_robot_namespace,
                                 output="screen",
                                 arguments=["--ros-args", "--log-level", "info"],
-                                parameters=[moveit_config.to_dict(), params_yaml],
+                                parameters=[
+                                    moveit_config.to_dict(),
+                                    params_yaml,
+                                    {
+                                        "joint_state_wait_timeout_sec": LaunchConfiguration(
+                                            "joint_state_wait_timeout_sec"
+                                        )
+                                    },
+                                ],
                             )
                         ],
                     ),

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>trunk_web_hmi</name>
+  <version>0.0.1</version>
+  <description>Web HMI MVP for trunk robot control, planning, waypoints, and diagnostics.</description>
+
+  <maintainer email="fanholmes29@gmail.com">wxl</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>trunk_teleop_control</exec_depend>
+  <exec_depend>trunk_two_stage_planner</exec_depend>
+  <exec_depend>python3-fastapi</exec_depend>
+  <exec_depend>python3-uvicorn</exec_depend>
+  <exec_depend>python3-pydantic</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

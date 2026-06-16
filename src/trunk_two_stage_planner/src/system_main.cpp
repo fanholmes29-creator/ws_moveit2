@@ -88,6 +88,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(node, "ik_timeout", config.ik_timeout);
   declareIfMissingDouble(node, "ik_limit_penalty_weight", config.ik_limit_penalty_weight);
 
+  declareIfMissingString(node, "stage1_pre_mode", config.stage1_pre_mode);
   declareIfMissingInt(node, "stage1_q1_samples", config.stage1_q1_samples);
   declareIfMissingInt(node, "stage1_q2_samples", config.stage1_q2_samples);
   declareIfMissingDouble(node, "w1", config.w1);
@@ -132,6 +133,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.ik_attempts = node->get_parameter("ik_attempts").as_int();
   config.ik_timeout = node->get_parameter("ik_timeout").as_double();
   config.ik_limit_penalty_weight = node->get_parameter("ik_limit_penalty_weight").as_double();
+  config.stage1_pre_mode = node->get_parameter("stage1_pre_mode").as_string();
   config.stage1_q1_samples = node->get_parameter("stage1_q1_samples").as_int();
   config.stage1_q2_samples = node->get_parameter("stage1_q2_samples").as_int();
   config.w1 = node->get_parameter("w1").as_double();
@@ -189,6 +191,9 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
     "allow_start_state_fallback_to_config",
     config.allow_start_state_fallback_to_config);
   declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
+  const double live_start_wait_sec =
+    node->get_parameter("live_start_state_wait_sec").as_double();
+  declareIfMissingDouble(node, "joint_state_wait_timeout_sec", live_start_wait_sec);
   declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
   declareIfMissingStringArray(node, "expected_joint_names", config.expected_joint_names);
   declareIfMissingBool(node, "strict_joint_states", config.strict_joint_states);
@@ -199,6 +204,11 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(
     node, "execute_action_server_wait_sec", config.execute_action_server_wait_sec);
   declareIfMissingDouble(node, "execute_result_wait_sec", config.execute_result_wait_sec);
+  declareIfMissingBool(node, "require_control_mode", config.require_control_mode);
+  declareIfMissingString(node, "control_mode_state_topic", config.control_mode_state_topic);
+  declareIfMissingString(node, "auto_control_mode", config.auto_control_mode);
+  declareIfMissingDouble(
+    node, "control_mode_wait_timeout_sec", config.control_mode_wait_timeout_sec);
   declareIfMissingBool(node, "export_csv", config.export_csv);
 
   config.stage1_group_name = node->get_parameter("stage1_group_name").as_string();
@@ -226,6 +236,8 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.allow_start_state_fallback_to_config =
     node->get_parameter("allow_start_state_fallback_to_config").as_bool();
   config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
+  config.joint_state_wait_timeout_sec =
+    node->get_parameter("joint_state_wait_timeout_sec").as_double();
   config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
   config.expected_joint_names = node->get_parameter("expected_joint_names").as_string_array();
   config.strict_joint_states = node->get_parameter("strict_joint_states").as_bool();
@@ -236,6 +248,11 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.execute_action_server_wait_sec =
     node->get_parameter("execute_action_server_wait_sec").as_double();
   config.execute_result_wait_sec = node->get_parameter("execute_result_wait_sec").as_double();
+  config.require_control_mode = node->get_parameter("require_control_mode").as_bool();
+  config.control_mode_state_topic = node->get_parameter("control_mode_state_topic").as_string();
+  config.auto_control_mode = node->get_parameter("auto_control_mode").as_string();
+  config.control_mode_wait_timeout_sec =
+    node->get_parameter("control_mode_wait_timeout_sec").as_double();
   config.export_csv = node->get_parameter("export_csv").as_bool();
   return config;
 }

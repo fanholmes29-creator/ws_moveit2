@@ -78,7 +78,7 @@ PlannerResult TwoStagePlanner::planDetailed(
   if (!solveFinalIK(q_start, target_pose, q_goal_ik, used_fallback_goal)) {
     return PlannerResult::fail(
       PlannerError::IkFailed,
-      "Failed to solve final IK for target pose.",
+      "Target pose is unreachable: failed to solve final IK.",
       summary);
   }
   summary.q_goal_ik = q_goal_ik;
@@ -95,6 +95,46 @@ PlannerResult TwoStagePlanner::planDetailed(
     target_pose.orientation.x,
     target_pose.orientation.y,
     target_pose.orientation.z);
+
+  if (config_.stage1_pre_mode == "ik_q12_straight") {
+    summary.q_pre = composeStage1State(
+      q_goal_ik[idx_q1_], q_goal_ik[idx_q2_], q_start[idx_q4_]);
+    if (!kinematics_.isStateWithinBounds(summary.q_pre)) {
+      return PlannerResult::fail(
+        PlannerError::Stage1SearchFailed,
+        "IK-derived preparatory state is outside joint limits.",
+        summary);
+    }
+
+    summary.q_goal_stage2 = q_goal_ik;
+    summary.delta_to_ik_goal = subtractVectors(q_goal_ik, summary.q_pre);
+    summary.delta_stage2_used = subtractVectors(summary.q_goal_stage2, summary.q_pre);
+
+    const Eigen::Isometry3d final_tf = kinematics_.getLinkTransform(
+      summary.q_goal_stage2, kinematics_.getTipLinkName());
+    summary.stage2_position_error = (final_tf.translation() - summary.p_d).norm();
+    const Eigen::Vector3d e_R = orientationErrorVector(final_tf.rotation(), q_d);
+    summary.stage2_orientation_error_deg = e_R.norm() * 180.0 / M_PI;
+    summary.selected_stage1_stage2_pos_error = summary.stage2_position_error;
+    summary.selected_stage1_stage2_pose_error =
+      config_.stage2_pose_wp * summary.stage2_position_error * summary.stage2_position_error +
+      config_.stage2_pose_wR * e_R.squaredNorm();
+    summary.best_stage2_pos_error = summary.selected_stage1_stage2_pos_error;
+    summary.best_stage2_pose_error = summary.selected_stage1_stage2_pose_error;
+    summary.q_pre_best_stage2_pos = summary.q_pre;
+    summary.q_pre_best_stage2_pose = summary.q_pre;
+    summary.threshold_feasible_count =
+      summary.selected_stage1_stage2_pose_error < config_.stage2_pose_epsilon ? 1 : 0;
+    summary.used_threshold_filter = summary.threshold_feasible_count > 0;
+    return PlannerResult::ok(summary);
+  }
+
+  if (config_.stage1_pre_mode != "search") {
+    return PlannerResult::fail(
+      PlannerError::InvalidInput,
+      "Unsupported stage1_pre_mode: " + config_.stage1_pre_mode,
+      summary);
+  }
 
   Stage1SearchResult search_result;
   if (!searchStage1PreparatoryState(
@@ -159,7 +199,7 @@ bool TwoStagePlanner::solveFinalIK(
   // 策略：
   // 1) 用确定性 seed + 随机 seed 收集 IK 候选
   // 2) 按“接近起点平滑性 + 限位裕度代价”排序
-  // 3) 仅在允许且 IK 全失败时回退到配置目标
+  // 3) IK 全失败时直接报告目标位姿不可达，避免用默认关节值伪装成功
   used_fallback_goal = false;
   std::vector<std::vector<double>> candidates;
 
@@ -206,14 +246,6 @@ bool TwoStagePlanner::solveFinalIK(
     return true;
   }
 
-  if (config_.allow_goal_fallback && config_.q_goal_fallback.size() == q_start.size()) {
-    // 警告：回退路径会绕过笛卡尔 IK 的精确性保证。
-    // 仅在更看重运行鲁棒性而非位姿严格精确时启用。
-    q_goal = config_.q_goal_fallback;
-    used_fallback_goal = true;
-    return true;
-  }
-
   return false;
 }
 
@@ -238,11 +270,12 @@ std::vector<double> TwoStagePlanner::composeStage1State(
   double q4_fix) const
 {
   // trunk 场景特定 stage1 规则：
-  // q3 跟随 q1+q2 耦合；q4 固定为起始阶段值。
+  // 新 trunk 模型的前三个主动关节轴方向一致，q3 需要抵消 q1/q2 的累计弯曲。
+  // 这让 stage1 预备态保持“挺直”语义，而不是继续同向叠加弯曲。
   std::vector<double> q(kinematics_.getJointNames().size(), 0.0);
   q[idx_q1_] = q1;
   q[idx_q2_] = q2;
-  q[idx_q3_] = q1 + q2;
+  q[idx_q3_] = -(q1 + q2);
   q[idx_q4_] = q4_fix;
   return q;
 }

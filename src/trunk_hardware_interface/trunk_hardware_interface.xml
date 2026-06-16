@@ -1,0 +1,11 @@
+<library path="trunk_hardware_interface">
+  <class
+    name="trunk_hardware_interface/TrunkHardwareSystem"
+    type="trunk_hardware_interface::TrunkHardwareSystem"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control SystemInterface for the trunk real robot. The transport-specific
+      driver hooks must be connected to the motor bus before controlling hardware.
+    </description>
+  </class>
+</library>

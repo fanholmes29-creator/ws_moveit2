@@ -10,7 +10,10 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "trunk_two_stage_planner/robot_kinematics_helper.hpp"
+#include "trunk_two_stage_planner/srv/execute_previewed_trajectory.hpp"
+#include "trunk_two_stage_planner/srv/fk_joint_to_pose.hpp"
 #include "trunk_two_stage_planner/srv/plan_to_pose.hpp"
+#include "trunk_two_stage_planner/srv/set_trajectory_display.hpp"
 #include "trunk_two_stage_planner/two_stage_planner_manager.hpp"
 
 namespace trunk_two_stage_planner
@@ -90,6 +93,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(node, "ik_timeout", config.ik_timeout);
   declareIfMissingDouble(node, "ik_limit_penalty_weight", config.ik_limit_penalty_weight);
 
+  declareIfMissingString(node, "stage1_pre_mode", config.stage1_pre_mode);
   declareIfMissingInt(node, "stage1_q1_samples", config.stage1_q1_samples);
   declareIfMissingInt(node, "stage1_q2_samples", config.stage1_q2_samples);
   declareIfMissingDouble(node, "w1", config.w1);
@@ -136,6 +140,7 @@ PlannerConfig loadAlgorithmConfig(const rclcpp::Node::SharedPtr& node)
   config.ik_timeout = node->get_parameter("ik_timeout").as_double();
   config.ik_limit_penalty_weight = node->get_parameter("ik_limit_penalty_weight").as_double();
 
+  config.stage1_pre_mode = node->get_parameter("stage1_pre_mode").as_string();
   config.stage1_q1_samples = node->get_parameter("stage1_q1_samples").as_int();
   config.stage1_q2_samples = node->get_parameter("stage1_q2_samples").as_int();
   config.w1 = node->get_parameter("w1").as_double();
@@ -193,6 +198,9 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
     "allow_start_state_fallback_to_config",
     config.allow_start_state_fallback_to_config);
   declareIfMissingDouble(node, "live_start_state_wait_sec", config.live_start_state_wait_sec);
+  const double live_start_wait_sec =
+    node->get_parameter("live_start_state_wait_sec").as_double();
+  declareIfMissingDouble(node, "joint_state_wait_timeout_sec", live_start_wait_sec);
   declareIfMissingString(node, "joint_states_topic", config.joint_states_topic);
   declareIfMissingStringArray(node, "expected_joint_names", config.expected_joint_names);
   declareIfMissingBool(node, "strict_joint_states", config.strict_joint_states);
@@ -203,6 +211,12 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   declareIfMissingDouble(
     node, "execute_action_server_wait_sec", config.execute_action_server_wait_sec);
   declareIfMissingDouble(node, "execute_result_wait_sec", config.execute_result_wait_sec);
+  declareIfMissingBool(node, "require_control_mode", config.require_control_mode);
+  declareIfMissingString(node, "control_mode_state_topic", config.control_mode_state_topic);
+  declareIfMissingString(node, "auto_control_mode", config.auto_control_mode);
+  declareIfMissingDouble(
+    node, "control_mode_wait_timeout_sec", config.control_mode_wait_timeout_sec);
+  declareIfMissingBool(node, "republish_display_trajectory", config.republish_display_trajectory);
   declareIfMissingBool(node, "export_csv", config.export_csv);
 
   config.stage1_group_name = node->get_parameter("stage1_group_name").as_string();
@@ -230,6 +244,8 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.allow_start_state_fallback_to_config =
     node->get_parameter("allow_start_state_fallback_to_config").as_bool();
   config.live_start_state_wait_sec = node->get_parameter("live_start_state_wait_sec").as_double();
+  config.joint_state_wait_timeout_sec =
+    node->get_parameter("joint_state_wait_timeout_sec").as_double();
   config.joint_states_topic = node->get_parameter("joint_states_topic").as_string();
   config.expected_joint_names = node->get_parameter("expected_joint_names").as_string_array();
   config.strict_joint_states = node->get_parameter("strict_joint_states").as_bool();
@@ -240,6 +256,13 @@ TwoStageSystemConfig loadSystemConfig(const rclcpp::Node::SharedPtr& node)
   config.execute_action_server_wait_sec =
     node->get_parameter("execute_action_server_wait_sec").as_double();
   config.execute_result_wait_sec = node->get_parameter("execute_result_wait_sec").as_double();
+  config.require_control_mode = node->get_parameter("require_control_mode").as_bool();
+  config.control_mode_state_topic = node->get_parameter("control_mode_state_topic").as_string();
+  config.auto_control_mode = node->get_parameter("auto_control_mode").as_string();
+  config.control_mode_wait_timeout_sec =
+    node->get_parameter("control_mode_wait_timeout_sec").as_double();
+  config.republish_display_trajectory =
+    node->get_parameter("republish_display_trajectory").as_bool();
   config.export_csv = node->get_parameter("export_csv").as_bool();
   return config;
 }
@@ -300,6 +323,36 @@ public:
       "two_stage_planner/plan_to_pose",
       std::bind(
         &TwoStagePlannerServiceNode::handlePlanToPose,
+        this,
+        std::placeholders::_1,
+        std::placeholders::_2));
+    preview_service_ = node_->create_service<trunk_two_stage_planner::srv::PlanToPose>(
+      "two_stage_planner/preview_plan_to_pose",
+      std::bind(
+        &TwoStagePlannerServiceNode::handlePreviewPlanToPose,
+        this,
+        std::placeholders::_1,
+        std::placeholders::_2));
+    execute_service_ =
+      node_->create_service<trunk_two_stage_planner::srv::ExecutePreviewedTrajectory>(
+      "two_stage_planner/execute_previewed_trajectory",
+      std::bind(
+        &TwoStagePlannerServiceNode::handleExecutePreviewedTrajectory,
+        this,
+        std::placeholders::_1,
+        std::placeholders::_2));
+    fk_service_ = node_->create_service<trunk_two_stage_planner::srv::FkJointToPose>(
+      "two_stage_planner/fk_joint_to_pose",
+      std::bind(
+        &TwoStagePlannerServiceNode::handleFkJointToPose,
+        this,
+        std::placeholders::_1,
+        std::placeholders::_2));
+    trajectory_display_service_ =
+      node_->create_service<trunk_two_stage_planner::srv::SetTrajectoryDisplay>(
+      "two_stage_planner/set_trajectory_display",
+      std::bind(
+        &TwoStagePlannerServiceNode::handleSetTrajectoryDisplay,
         this,
         std::placeholders::_1,
         std::placeholders::_2));
@@ -385,12 +438,105 @@ private:
     response->used_external_target = used_external;
   }
 
+  void handlePreviewPlanToPose(
+    const std::shared_ptr<trunk_two_stage_planner::srv::PlanToPose::Request> request,
+    std::shared_ptr<trunk_two_stage_planner::srv::PlanToPose::Response> response)
+  {
+    geometry_msgs::msg::Pose target_pose;
+    std::string error_message;
+    const bool used_external = request->use_external_target;
+    if (used_external) {
+      if (!buildValidatedExternalPose(request, target_pose, error_message)) {
+        response->success = false;
+        response->error_code = static_cast<int32_t>(PlannerError::InvalidInput);
+        response->message =
+          std::string("[") + plannerErrorToString(PlannerError::InvalidInput) + "] " + error_message;
+        response->used_target_pose = geometry_msgs::msg::Pose();
+        response->used_external_target = true;
+        return;
+      }
+    } else {
+      target_pose = buildDefaultTargetPose();
+    }
+
+    const PlannerResult result = manager_.planTwoStageToTargetDetailed(target_pose, false);
+    response->success = result.success;
+    response->error_code = static_cast<int32_t>(result.error);
+    response->message = result.success ?
+      "Planning succeeded; trajectory preview is available in RViz and cached for execution." :
+      std::string("[") + plannerErrorToString(result.error) + "] " + result.message;
+    response->used_target_pose = target_pose;
+    response->used_external_target = used_external;
+  }
+
+  void handleExecutePreviewedTrajectory(
+    const std::shared_ptr<trunk_two_stage_planner::srv::ExecutePreviewedTrajectory::Request>,
+    std::shared_ptr<trunk_two_stage_planner::srv::ExecutePreviewedTrajectory::Response> response)
+  {
+    const PlannerResult result = manager_.executeCachedTrajectory();
+    response->success = result.success;
+    response->error_code = static_cast<int32_t>(result.error);
+    response->message = result.success ?
+      "Cached trajectory executed; RViz trajectory display was paused." :
+      std::string("[") + plannerErrorToString(result.error) + "] " + result.message;
+  }
+
+  void handleFkJointToPose(
+    const std::shared_ptr<trunk_two_stage_planner::srv::FkJointToPose::Request> request,
+    std::shared_ptr<trunk_two_stage_planner::srv::FkJointToPose::Response> response)
+  {
+    if (request->joint_positions.size() != pose_helper_.getJointNames().size()) {
+      response->success = false;
+      response->message = "joint_positions dimension does not match trunk_group DOF.";
+      response->pose = geometry_msgs::msg::Pose();
+      return;
+    }
+    try {
+      const std::vector<double> joint_positions(
+        request->joint_positions.begin(), request->joint_positions.end());
+      const Eigen::Isometry3d tf =
+        pose_helper_.getLinkTransform(joint_positions, pose_helper_.getTipLinkName());
+      const Eigen::Quaterniond q(tf.rotation());
+      response->pose.position.x = tf.translation().x();
+      response->pose.position.y = tf.translation().y();
+      response->pose.position.z = tf.translation().z();
+      response->pose.orientation.x = q.x();
+      response->pose.orientation.y = q.y();
+      response->pose.orientation.z = q.z();
+      response->pose.orientation.w = q.w();
+      response->success = true;
+      response->message = "FK succeeded.";
+    } catch (const std::exception& e) {
+      response->success = false;
+      response->message = e.what();
+      response->pose = geometry_msgs::msg::Pose();
+    }
+  }
+
+  void handleSetTrajectoryDisplay(
+    const std::shared_ptr<trunk_two_stage_planner::srv::SetTrajectoryDisplay::Request> request,
+    std::shared_ptr<trunk_two_stage_planner::srv::SetTrajectoryDisplay::Response> response)
+  {
+    const PlannerResult result = manager_.setCachedTrajectoryDisplay(request->show);
+    response->success = result.success;
+    response->error_code = static_cast<int32_t>(result.error);
+    response->message = result.success ?
+      result.message :
+      std::string("[") + plannerErrorToString(result.error) + "] " + result.message;
+  }
+
   rclcpp::Node::SharedPtr node_;
   PlannerConfig algorithm_config_;
   TwoStageSystemConfig system_config_;
   RobotKinematicsHelper pose_helper_;
   TwoStagePlannerManager manager_;
   rclcpp::Service<trunk_two_stage_planner::srv::PlanToPose>::SharedPtr service_;
+  rclcpp::Service<trunk_two_stage_planner::srv::PlanToPose>::SharedPtr preview_service_;
+  rclcpp::Service<trunk_two_stage_planner::srv::ExecutePreviewedTrajectory>::SharedPtr
+    execute_service_;
+  rclcpp::Service<trunk_two_stage_planner::srv::FkJointToPose>::SharedPtr fk_service_;
+  rclcpp::Service<trunk_two_stage_planner::srv::SetTrajectoryDisplay>::SharedPtr
+    trajectory_display_service_;
 };
 
 }  // namespace trunk_two_stage_planner

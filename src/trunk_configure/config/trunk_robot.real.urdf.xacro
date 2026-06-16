@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="trunk_robot">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <xacro:arg name="transport" default="dry_run" />
+    <xacro:arg name="port" default="" />
+    <xacro:arg name="baudrate" default="1000000" />
+    <xacro:arg name="can_interface" default="can0" />
+    <xacro:arg name="ip" default="" />
+    <xacro:arg name="dry_run" default="true" />
+    <xacro:arg name="command_timeout_ms" default="100" />
+    <xacro:arg name="require_homing" default="true" />
+    <xacro:arg name="require_absolute_encoder" default="true" />
+    <xacro:arg name="max_position_error_rad" default="0.2" />
+
+    <xacro:include filename="$(find robot_model)/urdf/trunk_robot.urdf" />
+    <xacro:include filename="trunk_robot.real.ros2_control.xacro" />
+
+    <xacro:trunk_robot_real_ros2_control
+        name="RealTrunkSystem"
+        initial_positions_file="$(arg initial_positions_file)"
+        transport="$(arg transport)"
+        port="$(arg port)"
+        baudrate="$(arg baudrate)"
+        can_interface="$(arg can_interface)"
+        ip="$(arg ip)"
+        dry_run="$(arg dry_run)"
+        command_timeout_ms="$(arg command_timeout_ms)"
+        require_homing="$(arg require_homing)"
+        require_absolute_encoder="$(arg require_absolute_encoder)"
+        max_position_error_rad="$(arg max_position_error_rad)" />
+</robot>

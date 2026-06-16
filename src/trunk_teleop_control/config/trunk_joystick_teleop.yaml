@@ -1,0 +1,98 @@
+/**/trunk_joystick_teleop:
+  ros__parameters:
+    # 这里使用相对 topic 名称，ROS2 会自动解析到节点 namespace 下。
+    # 例如 robot_namespace:=trunk_robot 时，对应为：
+    #   /trunk_robot/joy
+    #   /trunk_robot/joint_states
+    #   /trunk_robot/trunk_group_controller/controller_state
+    #   /trunk_robot/trunk_group_controller/follow_joint_trajectory
+    joy_topic: "joy"
+    joint_states_topic: "joint_states"
+    # FakeSystem / open-loop controller 下优先使用 controller actual state 作为反馈。
+    # joint_states 仍保留为备用状态来源。
+    use_controller_state: true
+    controller_state_topic: "trunk_group_controller/controller_state"
+    # step 模式使用 action goal；continuous 模式使用 joint_trajectory topic。
+    follow_joint_trajectory_action: "trunk_group_controller/follow_joint_trajectory"
+    joint_trajectory_topic: "trunk_group_controller/joint_trajectory"
+
+    # 受控的 trunk 关节名称，顺序需与 controller 配置一致。
+    joint_names:
+      - trunk_joint1
+      - trunk_joint2
+      - trunk_joint3
+      - trunk_joint4
+
+    # 控制模式：
+    #   continuous：默认连续控制，按住 deadman 并推动摇杆时持续发布短轨迹命令。
+    #   step：兼容旧版单步控制，摇杆越过阈值时发送一次 action goal。
+    control_mode: "continuous"
+    # continuous 模式下的定时控制频率，单位 Hz。
+    control_rate: 10.0
+    # continuous 模式下摇杆满量程对应的最大关节速度，单位 rad/s。
+    max_velocity_rad_s: 0.05
+    # 每条短 JointTrajectory command 的期望执行时长，单位秒。
+    command_duration: 0.2
+    # 摇杆轴死区，小于该绝对值时认为摇杆已回中并停止发布运动命令。
+    axis_deadzone: 0.15
+    # 连续控制下对摇杆轴输入做一阶低通滤波，范围 [0,1]，越小越平滑。
+    axis_filter_alpha: 0.25
+    # 死区迟滞：超过 engage 才开始运动，低于 release 才停止运动，避免阈值附近抖动。
+    axis_deadzone_release: 0.15
+    axis_deadzone_engage: 0.22
+    # 内部积分目标与当前反馈偏差过大时重置目标，避免目标漂移。
+    command_state_max_error_rad: 0.2
+
+    # step 模式单次动作步长，单位 rad。
+    step_rad: 0.02
+    # step 模式 action goal 的执行时长，单位秒。
+    trajectory_duration: 0.5
+    # Joy 消息超时时间，超时后停止连续控制或拒绝 step goal。
+    joy_timeout: 0.5
+    # 是否要求按住 deadman 键才允许运动。
+    require_deadman: true
+    # 控制源仲裁：只有 control_mode_state 为 manual_teleop 时才允许输出运动命令。
+    require_control_mode: true
+    control_mode_state_topic: "control_mode_state"
+    manual_control_mode: "manual_teleop"
+
+    # Yahboom 手柄按键索引：
+    #   buttons[0]  -> A
+    #   buttons[1]  -> B
+    #   buttons[2]  -> 未使用 / 预留
+    #   buttons[3]  -> X
+    #   buttons[4]  -> Y
+    #   buttons[5]  -> 未使用 / 预留
+    #   buttons[6]  -> L1 / LB（deadman）
+    #   buttons[7]  -> R1 / RB
+    #   buttons[8]  -> L2 / LT
+    #   buttons[9]  -> R2 / RT
+    #   buttons[10] -> SELECT
+    #   buttons[11] -> START
+    #   buttons[12] -> 左摇杆按下
+    #   buttons[13] -> 右摇杆按下
+    button_a: 0
+    button_b: 1
+    button_x: 3
+    button_y: 4
+    button_l1: 6
+
+    # 左摇杆竖直轴（Yahboom: axes[1]，上推为正，下推为负）。
+    # axis_step_threshold 仅用于 step 模式的边沿触发阈值。
+    axis_step: 1
+    axis_step_threshold: 0.5
+    invert_axis_step: false
+
+    # 关节软限位，continuous 积分目标和 step 单步目标都会被限制在该范围内。
+    trunk_joint1:
+      min: -1.39
+      max: 1.39
+    trunk_joint2:
+      min: -1.74
+      max: 1.74
+    trunk_joint3:
+      min: -1.74
+      max: 1.74
+    trunk_joint4:
+      min: -3.14
+      max: 3.14

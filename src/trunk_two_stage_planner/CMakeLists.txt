@@ -10,6 +10,7 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
@@ -26,6 +27,9 @@ include_directories(include)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanToPose.srv"
+  "srv/ExecutePreviewedTrajectory.srv"
+  "srv/FkJointToPose.srv"
+  "srv/SetTrajectoryDisplay.srv"
   DEPENDENCIES geometry_msgs
 )
 
@@ -40,6 +44,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -74,14 +79,11 @@ add_executable(two_stage_planner_service
   src/two_stage_planner_service_main.cpp
 )
 
-add_executable(joystick_joint_teleop
-  src/joystick_joint_teleop.cpp
-)
-
 ament_target_dependencies(two_stage_planner_analysis_tool
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -103,6 +105,7 @@ ament_target_dependencies(two_stage_planner_system
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -124,6 +127,7 @@ ament_target_dependencies(fk_pose_from_joint
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -145,6 +149,7 @@ ament_target_dependencies(ik_joint_from_pose
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -166,6 +171,7 @@ ament_target_dependencies(two_stage_planner_service
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
   geometry_msgs
   control_msgs
   trajectory_msgs
@@ -186,16 +192,6 @@ target_compile_features(two_stage_planner_service PUBLIC cxx_std_17)
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(two_stage_planner_service "${cpp_typesupport_target}")
 
-ament_target_dependencies(joystick_joint_teleop
-  rclcpp
-  rclcpp_action
-  sensor_msgs
-  trajectory_msgs
-  control_msgs
-  builtin_interfaces
-)
-target_compile_features(joystick_joint_teleop PUBLIC cxx_std_17)
-
 install(DIRECTORY include/
   DESTINATION include
 )
@@ -207,7 +203,6 @@ install(TARGETS
   fk_pose_from_joint
   ik_joint_from_pose
   two_stage_planner_service
-  joystick_joint_teleop
   DESTINATION lib/${PROJECT_NAME}
 )
 

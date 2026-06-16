@@ -1,0 +1,5 @@
+float64[4] joint_positions
+---
+bool success
+string message
+geometry_msgs/Pose pose
